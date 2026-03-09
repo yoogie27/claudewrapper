@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - ClaudeWrapper{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Dashboard</h1>
+  <p>Overview of jobs, sessions, and system status</p>
+</div>
+
+<!-- System Health (live) -->
+<div class="card" id="health-card">
+  <div class="card-header">
+    <h2>System Health</h2>
+    <span class="text-muted text-sm" id="health-updated"></span>
+  </div>
+  <div class="stats" style="margin-bottom:0" id="health-stats">
+    <div class="stat">
+      <div class="stat-label">Disk (C:)</div>
+      <div class="stat-value" id="h-disk">-</div>
+      <div class="stat-sub" id="h-disk-sub"></div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Memory</div>
+      <div class="stat-value" id="h-mem">-</div>
+      <div class="stat-sub" id="h-mem-sub"></div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Claude Code</div>
+      <div class="stat-value text-sm" id="h-claude">-</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Workers</div>
+      <div class="stat-value">{{ settings.worker_count }}</div>
+      <div class="stat-sub">{{ "Test mode" if settings.test_mode else "Live" }} / {{ settings.max_concurrent_per_team }}/team / Poll {{ settings.poll_interval_seconds }}s</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Active Jobs</div>
+      <div class="stat-value">{{ jobs | selectattr('status', 'in', ['pending', 'running']) | list | length }}</div>
+      <div class="stat-sub">{{ last_poll[:19] if last_poll else "never polled" }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Git</div>
+      <div class="stat-value text-sm" id="h-git">-</div>
+    </div>
+  </div>
+</div>
+
+<!-- Team mappings -->
+<div class="card">
+  <div class="card-header">
+    <h2>Team Mappings</h2>
+    <a href="/teams" class="btn btn-sm btn-secondary">Configure</a>
+  </div>
+  {% if mappings %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Team</th><th>Path</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for m in mappings %}
+        <tr>
+          <td>{{ m["team_name"] }}</td>
+          <td class="mono text-sm">{{ m["local_path"] }}</td>
+          <td>
+            {% if m["enabled"] %}
+            <span class="badge badge-enabled">Enabled</span>
+            {% else %}
+            <span class="badge badge-disabled">Disabled</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty"><p>No team mappings configured. <a href="/teams">Set up teams</a> to get started.</p></div>
+  {% endif %}
+</div>
+
+<!-- Sessions -->
+<div class="card">
+  <div class="card-header">
+    <h2>Sessions</h2>
+    <span class="count">{{ sessions | length }}</span>
+  </div>
+  {% if sessions %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Last Activity</th><th>Links</th><th>PR</th><th></th></tr></thead>
+      <tbody>
+        {% for s in sessions %}
+        {% set title = titles.get(s["identifier"], "") %}
+        <tr>
+          <td class="mono">{{ s["identifier"] }}</td>
+          <td class="text-sm" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ title }}">{{ title }}</td>
+          <td>
+            {% if s["status"] == "running" %}
+            <span class="badge badge-running">running</span>
+            {% elif s["status"] == "done" %}
+            <span class="badge badge-done">done</span>
+            {% elif s["status"] == "failed" %}
+            <span class="badge badge-failed">failed</span>
+            {% elif s["status"] == "awaiting_feedback" %}
+            <span class="badge badge-feedback">awaiting feedback</span>
+            {% elif s["status"] == "test" %}
+            <span class="badge badge-test">test</span>
+            {% else %}
+            <span class="badge">{{ s["status"] }}</span>
+            {% endif %}
+            {% if s["last_error"] %}
+            <span class="text-muted text-sm" title="{{ s['last_error'] }}">(error)</span>
+            {% endif %}
+          </td>
+          <td class="muted text-sm">{{ s["last_activity_at"][:19] if s["last_activity_at"] else "-" }}</td>
+          <td>
+            <a href="/sessions/{{ s['identifier'] }}/log" class="btn btn-sm btn-secondary">Log</a>
+            <a href="/sessions/{{ s['identifier'] }}/prompt" class="btn btn-sm btn-secondary">Prompt</a>
+          </td>
+          <td>
+            {% if s["pr_url"] %}
+            <a href="{{ s['pr_url'] }}" target="_blank" class="btn btn-sm btn-secondary">PR</a>
+            <form method="post" action="/api/merge" style="display:inline">
+              <input type="hidden" name="run_id" value="{{ s['run_id'] }}" />
+              <button type="submit" class="btn btn-sm btn-primary">Merge</button>
+            </form>
+            {% endif %}
+          </td>
+          <td>
+            {% if s["status"] in ("failed", "done", "awaiting_feedback") %}
+            <form method="post" action="/api/reprocess" style="display:inline" title="Re-run post-processing (comment, state, PR) without re-running Claude">
+              <input type="hidden" name="identifier" value="{{ s['identifier'] }}" />
+              <button type="submit" class="btn btn-sm btn-primary">Reprocess</button>
+            </form>
+            {% endif %}
+            <form method="post" action="/api/retry" style="display:inline">
+              <input type="hidden" name="identifier" value="{{ s['identifier'] }}" />
+              <button type="submit" class="btn btn-sm btn-secondary">Retry</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty"><p>No sessions yet</p></div>
+  {% endif %}
+</div>
+
+<!-- Job Queue -->
+<div class="card">
+  <div class="card-header">
+    <h2>Job Queue</h2>
+    <span class="count">{{ jobs | length }}</span>
+  </div>
+  {% if jobs %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Ticket</th><th>Title</th><th>Reason</th><th>Status</th><th>Created</th><th></th></tr></thead>
+      <tbody>
+        {% for j in jobs %}
+        {% set title = titles.get(j["identifier"], "") %}
+        <tr>
+          <td class="mono">{{ j["identifier"] }}</td>
+          <td class="text-sm" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ title }}">{{ title }}</td>
+          <td>{{ j["reason"] }}</td>
+          <td>
+            {% if j["status"] == "running" %}
+            <span class="badge badge-running">running</span>
+            {% elif j["status"] == "pending" %}
+            <span class="badge badge-pending">pending</span>
+            {% elif j["status"] == "done" %}
+            <span class="badge badge-done">done</span>
+            {% elif j["status"] == "failed" %}
+            <span class="badge badge-failed">failed</span>
+            {% else %}
+            <span class="badge">{{ j["status"] }}</span>
+            {% endif %}
+          </td>
+          <td class="muted text-sm">{{ j["created_at"][:19] }}</td>
+          <td>
+            {% if j["status"] == "running" %}
+            <form method="post" action="/api/cancel" style="display:inline">
+              <input type="hidden" name="job_id" value="{{ j['id'] }}" />
+              <button type="submit" class="btn btn-sm btn-danger">Cancel</button>
+            </form>
+            {% elif j["status"] == "failed" %}
+            <form method="post" action="/api/retry-job" style="display:inline">
+              <input type="hidden" name="identifier" value="{{ j['identifier'] }}" />
+              <button type="submit" class="btn btn-sm btn-secondary">Retry</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty"><p>No jobs in queue</p></div>
+  {% endif %}
+</div>
+
+<!-- Manual Trigger -->
+<div class="card">
+  <div class="card-header">
+    <h2>Manual Trigger</h2>
+  </div>
+  <p class="text-muted mb-8">Run Claude on a ticket without waiting for polling. Enter a ticket identifier and click Lookup.</p>
+  <form method="post" action="/api/trigger" id="manual-trigger-form">
+    <div class="form-row">
+      <div class="form-group">
+        <label>Identifier</label>
+        <input type="text" name="identifier" id="mt-identifier" placeholder="e.g. ENG-123" />
+      </div>
+      <div class="form-group">
+        <label>Issue ID</label>
+        <input type="text" name="issue_id" id="mt-issue-id" placeholder="UUID (auto-filled)" />
+      </div>
+      <div class="form-group">
+        <label>Team ID</label>
+        <input type="text" name="team_id" id="mt-team-id" placeholder="UUID (auto-filled)" />
+      </div>
+      <div class="form-group" style="flex:0; padding-top:20px">
+        <div class="btn-group">
+          <button type="button" id="lookup-btn" class="btn btn-secondary">Lookup</button>
+          <button type="submit" class="btn btn-primary">Trigger</button>
+        </div>
+      </div>
+    </div>
+  </form>
+  <div id="lookup-result" class="text-muted text-sm mt-8"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Auto-refresh every 5s (only when tab is visible)
+  setInterval(() => { if (!document.hidden) location.reload(); }, 5000);
+
+  // Health polling
+  function pctColor(pct) {
+    if (pct > 90) return 'var(--error)';
+    if (pct > 75) return 'var(--warning)';
+    return 'var(--success)';
+  }
+
+  async function pollHealth() {
+    try {
+      const resp = await fetch('/api/health');
+      const h = await resp.json();
+
+      if (h.disk) {
+        document.getElementById('h-disk').innerHTML =
+          '<span style="color:'+pctColor(h.disk.used_pct)+'">'+h.disk.free_gb+' GB</span>';
+        document.getElementById('h-disk-sub').textContent =
+          h.disk.used_pct+'% used of '+h.disk.total_gb+' GB';
+      }
+
+      if (h.memory) {
+        document.getElementById('h-mem').innerHTML =
+          '<span style="color:'+pctColor(h.memory.used_pct)+'">'+h.memory.free_gb+' GB</span>';
+        document.getElementById('h-mem-sub').textContent =
+          h.memory.used_pct+'% used of '+h.memory.total_gb+' GB';
+      }
+
+      document.getElementById('h-claude').textContent = h.claude_version || 'not found';
+      document.getElementById('h-git').textContent = h.git_version ? h.git_version.replace('git version ','') : 'not found';
+
+      document.getElementById('health-updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+    } catch(e) {}
+  }
+
+  pollHealth();
+  setInterval(() => { if (!document.hidden) pollHealth(); }, 5000);
+
+  // Lookup
+  document.getElementById('lookup-btn').addEventListener('click', async () => {
+    const ident = document.getElementById('mt-identifier').value.trim();
+    const resEl = document.getElementById('lookup-result');
+    if (!ident) { resEl.textContent = 'Enter a ticket identifier first.'; return; }
+    resEl.textContent = 'Looking up...';
+    try {
+      const form = new FormData();
+      form.append('identifier', ident);
+      const resp = await fetch('/api/lookup', { method: 'POST', body: form });
+      if (!resp.ok) { resEl.textContent = 'Lookup failed.'; return; }
+      const data = await resp.json();
+      document.getElementById('mt-issue-id').value = data.issue_id;
+      document.getElementById('mt-team-id').value = data.team_id;
+      resEl.textContent = 'Found: ' + data.identifier + ' \u2014 ' + data.title + ' (' + data.team_name + ')';
+    } catch (e) { resEl.textContent = 'Lookup error.'; }
+  });
+</script>
+{% endblock %}

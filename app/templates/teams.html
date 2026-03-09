@@ -1,0 +1,254 @@
+{% extends "base.html" %}
+{% block title %}Teams - ClaudeWrapper{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Team Mappings</h1>
+  <p>Configure which Linear teams are connected and their default prompts</p>
+</div>
+
+{% if error %}
+<div class="alert alert-error">Linear API error: {{ error }}</div>
+{% endif %}
+
+{% for t in teams %}
+{% set m = mappings.get(t.id) %}
+{% set instructions = label_map.get(t.id, []) %}
+<div class="card">
+  <div class="card-header">
+    <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+      <h2 style="margin:0;">{{ t.name }} <span class="text-muted text-sm">({{ t.key }})</span></h2>
+      {% if m and m['enabled'] %}
+      <span class="badge badge-enabled">Enabled</span>
+      {% else %}
+      <span class="badge badge-disabled">Disabled</span>
+      {% endif %}
+      {% if paused_teams.get(t.id) %}
+      <span class="badge badge-failed">Paused</span>
+      {% endif %}
+      <div style="margin-left:auto; display:flex; gap:8px;">
+        <form method="post" action="/api/team/start-all" style="display:inline">
+          <input type="hidden" name="team_id" value="{{ t.id }}" />
+          <button type="submit" class="btn btn-sm btn-primary">Start All</button>
+        </form>
+        <form method="post" action="/api/team/pause" style="display:inline">
+          <input type="hidden" name="team_id" value="{{ t.id }}" />
+          <button type="submit" class="btn btn-sm {% if paused_teams.get(t.id) %}btn-primary{% else %}btn-secondary{% endif %}">
+            {% if paused_teams.get(t.id) %}Resume{% else %}Pause{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <form method="post" action="/api/mapping">
+    <input type="hidden" name="team_id" value="{{ t.id }}" />
+    <input type="hidden" name="team_name" value="{{ t.name }}" />
+
+    <div class="form-group">
+      <label>Local Repository Path</label>
+      <input type="hidden" name="local_path" value="{{ m['local_path'] if m else '' }}" />
+      <div class="flex gap-8" style="align-items:center">
+        <div style="flex:1; padding:8px 12px; background:var(--bg); border-radius:6px; font-family:var(--mono); font-size:.85rem;">
+          {{ m['local_path'] if m else '(not set — pick a folder)' }}
+        </div>
+        <a href="/picker?team_id={{ t.id }}&team_name={{ t.name | urlencode }}" class="btn btn-sm btn-secondary">Pick folder</a>
+      </div>
+      <div class="hint">Available roots: {{ root_dirs | join(", ") }}</div>
+    </div>
+
+    <div class="form-group">
+      <div class="flex-between">
+        <label>Default Prompt</label>
+        <button type="button" class="btn btn-sm btn-secondary reset-prompt-btn">Reset to default</button>
+      </div>
+      <textarea name="default_prompt" rows="8" class="prompt-textarea">{{ m['default_prompt'] if m else default_prompt }}</textarea>
+      <div class="hint">System instruction prepended to every prompt. Leave empty or click "Reset" to use the built-in rich default.</div>
+    </div>
+
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" name="enabled" value="1" {% if not m or m['enabled'] %}checked{% endif %} />
+        Enabled
+      </label>
+    </div>
+
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" name="auto_process" value="1" {% if not m or m['auto_process'] %}checked{% endif %} />
+        Auto-process tickets (run Claude automatically when Linear detects new/updated tickets)
+      </label>
+      <div class="hint">When disabled, tickets are only processed when manually triggered from the Tickets page.</div>
+    </div>
+
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" name="auto_merge" value="1" {% if m and m['auto_merge'] %}checked{% endif %} />
+        Auto-merge PRs (automatically merge the GitHub PR after a successful session)
+      </label>
+      <div class="hint">Requires GITHUB_TOKEN. Uses squash merge.</div>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Save</button>
+  </form>
+
+  <!-- Workspace MCP Check -->
+  {% if m and m['local_path'] %}
+  <div style="margin-top:20px; padding-top:16px; border-top:1px solid var(--border);">
+    <div class="flex-between mb-8">
+      <h3 style="font-size:.9rem; font-weight:600;">Workspace MCP Servers</h3>
+      <button type="button" class="btn btn-sm btn-secondary check-mcp-btn" data-path="{{ m['local_path'] }}">Check</button>
+    </div>
+    <div class="mcp-status" data-team="{{ t.id }}">
+      <p class="text-muted text-sm">Click "Check" to verify MCP server configuration.</p>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Label Instructions -->
+  <div style="margin-top:20px; padding-top:16px; border-top:1px solid var(--border);">
+    <h3 style="font-size:.9rem; font-weight:600; margin-bottom:8px;">Label Instructions</h3>
+    <p class="text-muted text-sm mb-8">Extra instructions appended when a ticket has a matching label.</p>
+
+    {% if instructions %}
+    <div class="table-wrap mb-8">
+      <table>
+        <thead><tr><th>Label</th><th>Instruction</th><th style="width:60px"></th></tr></thead>
+        <tbody>
+          {% for li in instructions %}
+          <tr>
+            <td><span class="badge badge-test">{{ li["label_name"] }}</span></td>
+            <td class="text-sm">{{ li["instruction"] }}</td>
+            <td>
+              <form method="post" action="/api/label-instruction/delete" style="display:inline">
+                <input type="hidden" name="team_id" value="{{ t.id }}" />
+                <input type="hidden" name="label_name" value="{{ li['label_name'] }}" />
+                <button type="submit" class="btn btn-sm btn-danger">Del</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    <form method="post" action="/api/label-instruction">
+      <input type="hidden" name="team_id" value="{{ t.id }}" />
+      <div class="form-row">
+        <div class="form-group" style="flex:0 0 180px">
+          <input type="text" name="label_name" placeholder="Label name" />
+        </div>
+        <div class="form-group">
+          <input type="text" name="instruction" placeholder="Instruction to append when this label is present" />
+        </div>
+        <div class="form-group" style="flex:0">
+          <button type="submit" class="btn btn-sm btn-secondary">Add</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+{% if not teams %}
+<div class="card">
+  <div class="empty">
+    <p>No teams found. Make sure your LINEAR_API_KEY is configured.</p>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const DEFAULT = {{ default_prompt | tojson }};
+document.querySelectorAll('.reset-prompt-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const ta = btn.closest('.form-group').querySelector('.prompt-textarea');
+    ta.value = DEFAULT;
+  });
+});
+
+// MCP workspace check
+function esc(s) { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+
+document.querySelectorAll('.check-mcp-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const path = btn.dataset.path;
+    const card = btn.closest('.card');
+    const statusEl = card.querySelector('.mcp-status');
+    statusEl.innerHTML = '<p class="text-muted text-sm"><span class="spinner"></span> Checking...</p>';
+
+    try {
+      const resp = await fetch('/api/workspace/check?path=' + encodeURIComponent(path));
+      const data = await resp.json();
+      renderMcpStatus(statusEl, data, path);
+    } catch(e) {
+      statusEl.innerHTML = '<div class="alert alert-error">Check failed: '+esc(e.message)+'</div>';
+    }
+  });
+
+  // Auto-check on page load
+  btn.click();
+});
+
+function renderMcpStatus(el, data, path) {
+  let html = '';
+  if (!data.config_exists) {
+    html += '<div class="alert alert-info mb-8">No MCP servers configured for this workspace yet. Click Install to add them.</div>';
+  }
+
+  html += '<div class="table-wrap"><table><thead><tr><th>Server</th><th>Status</th><th>Source</th><th>Description</th><th></th></tr></thead><tbody>';
+  for (const [key, info] of Object.entries(data.servers)) {
+    const badge = info.installed
+      ? '<span class="badge badge-done">installed</span>'
+      : info.required
+        ? '<span class="badge badge-failed">missing</span>'
+        : '<span class="badge badge-pending">not installed</span>';
+    const source = info.source ? '<span class="text-sm text-muted">'+esc(info.source)+'</span>' : '';
+    const action = info.installed
+      ? ''
+      : '<button class="btn btn-sm btn-primary install-mcp-btn" data-path="'+esc(path)+'" data-server="'+esc(key)+'">Install</button>';
+    html += '<tr><td><strong>'+esc(info.label)+'</strong></td><td>'+badge+'</td><td>'+source+'</td><td class="text-sm text-muted">'+esc(info.description)+'</td><td>'+action+'</td></tr>';
+  }
+  html += '</tbody></table></div>';
+
+  if (data.all_required_ok) {
+    html = '<div class="alert alert-success mb-8">All required MCP servers are configured.</div>' + html;
+  }
+
+  el.innerHTML = html;
+
+  // Bind install buttons
+  el.querySelectorAll('.install-mcp-btn').forEach(ibtn => {
+    ibtn.addEventListener('click', async () => {
+      ibtn.disabled = true;
+      ibtn.textContent = 'Installing...';
+      const body = new URLSearchParams({ path: ibtn.dataset.path, server: ibtn.dataset.server });
+      try {
+        const resp = await fetch('/api/workspace/install-mcp', { method: 'POST', body });
+        const result = await resp.json();
+        if (result.ok) {
+          ibtn.textContent = 'Done!';
+          ibtn.classList.remove('btn-primary');
+          ibtn.classList.add('btn-secondary');
+          // Re-check
+          const checkResp = await fetch('/api/workspace/check?path=' + encodeURIComponent(ibtn.dataset.path));
+          const checkData = await checkResp.json();
+          renderMcpStatus(el, checkData, ibtn.dataset.path);
+        } else {
+          toast('Install failed', result.error || 'Unknown error', 'error');
+          ibtn.disabled = false;
+          ibtn.textContent = 'Retry';
+        }
+      } catch(e) {
+        toast('Install error', e.message, 'error');
+        ibtn.disabled = false;
+        ibtn.textContent = 'Retry';
+      }
+    });
+  });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Settings - ClaudeWrapper{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Settings</h1>
+  <p>System configuration and Linear workflow state mappings</p>
+</div>
+
+<!-- Current config overview -->
+<div class="card">
+  <div class="card-header">
+    <h2>System Status</h2>
+  </div>
+  <div class="stats" style="margin-bottom:0">
+    <div class="stat">
+      <div class="stat-label">Workers</div>
+      <div class="stat-value">{{ settings.worker_count }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Poll Interval</div>
+      <div class="stat-value">{{ settings.poll_interval_seconds }}s</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Mode</div>
+      <div class="stat-value text-sm">{{ "Test" if settings.test_mode else "Live" }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">MCP</div>
+      <div class="stat-value text-sm">{{ "On" if settings.linear_mcp_enabled or settings.linear_api_key else "Off" }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Worktrees</div>
+      <div class="stat-value text-sm">{{ "On" if settings.use_git_worktrees else "Off" }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- Status mapping -->
+<div class="card">
+  <div class="card-header">
+    <h2>Workflow State Mapping</h2>
+  </div>
+
+  {% if available_states %}
+  <div class="alert alert-info mb-16">
+    Available states in your team:
+    {% for s in available_states %}
+    <span class="badge badge-test" style="margin:2px">{{ s.name }} <span class="text-muted">({{ s.type }})</span></span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <p class="text-muted text-sm mb-16">
+    Map ClaudeWrapper outcomes to your Linear workflow states. These are auto-detected on startup — only change if the defaults are wrong.
+  </p>
+
+  <form method="post" action="/api/settings">
+    <div class="form-group">
+      <label>Done</label>
+      <input type="text" name="status_done" value="{{ values.done }}" placeholder="e.g. Done" />
+      <div class="hint">Final state after a successful Claude run{% if values.done %} — currently: <strong>{{ values.done }}</strong>{% endif %}</div>
+    </div>
+
+    <div class="form-group">
+      <label>In Review</label>
+      <input type="text" name="status_review" value="{{ values.review }}" placeholder="e.g. In Review" />
+      <div class="hint">Set after Claude completes, before manual review (optional)</div>
+    </div>
+
+    <div class="form-group">
+      <label>Awaiting Feedback (HITL)</label>
+      <input type="text" name="status_hitl" value="{{ values.hitl }}" placeholder="e.g. Awaiting Feedback" />
+      <div class="hint">Set when Claude needs human input before continuing</div>
+    </div>
+
+    <div class="form-group">
+      <label>Blocked / Error</label>
+      <input type="text" name="status_error" value="{{ values.error }}" placeholder="e.g. Blocked" />
+      <div class="hint">Set when Claude's session fails or crashes</div>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Save Settings</button>
+  </form>
+</div>
+{% endblock %}
