@@ -64,7 +64,21 @@ def ensure_worktree(repo: Path, worktree_root: Path, identifier: str, fresh: boo
         _run(["git", "-C", str(repo), "worktree", "prune"])
     except Exception:
         pass
-    _run(["git", "-C", str(repo), "worktree", "add", "-B", branch, str(worktree_path), base_ref])
+
+    try:
+        _run(["git", "-C", str(repo), "worktree", "add", "-B", branch, str(worktree_path), base_ref])
+    except GitWorktreeError:
+        # Branch may be checked out in the main repo itself.
+        # Switch the main repo back to the default branch, then retry.
+        try:
+            _run(["git", "-C", str(repo), "checkout", base])
+        except Exception:
+            pass
+        try:
+            _run(["git", "-C", str(repo), "branch", "-D", branch])
+        except Exception:
+            pass
+        _run(["git", "-C", str(repo), "worktree", "add", "-b", branch, str(worktree_path), base_ref])
     return worktree_path
 
 
