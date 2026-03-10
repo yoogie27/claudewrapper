@@ -58,6 +58,12 @@ def ensure_worktree(repo: Path, worktree_root: Path, identifier: str, fresh: boo
                 pass  # If reset fails, the worktree is still usable
         return worktree_path
 
+    # Prune stale worktree records (e.g. after manual cleanup or disk wipe)
+    # so git doesn't refuse to reuse the branch name.
+    try:
+        _run(["git", "-C", str(repo), "worktree", "prune"])
+    except Exception:
+        pass
     _run(["git", "-C", str(repo), "worktree", "add", "-B", branch, str(worktree_path), base_ref])
     return worktree_path
 
