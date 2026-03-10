@@ -152,6 +152,13 @@ class Database:
                 self._conn.execute("ALTER TABLE team_mappings ADD COLUMN auto_merge INTEGER NOT NULL DEFAULT 0")
                 self._conn.commit()
 
+    def wal_checkpoint(self) -> None:
+        """Force a WAL checkpoint to reclaim disk space."""
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
+
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
         cur = self._conn

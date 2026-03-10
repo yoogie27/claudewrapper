@@ -88,6 +88,14 @@ class Orchestrator:
     def is_own_comment(body: str) -> bool:
         return Orchestrator.COMMENT_MARKER in (body or "")
 
+    def _safe_mark_failed(self, job_id: int, issue_id: str, identifier: str, session_dir: Path, error: str) -> None:
+        """Mark a job/session as failed, swallowing DB errors so the worker survives."""
+        try:
+            self.db.upsert_session(job_id, issue_id, identifier, "failed", str(session_dir), None, datetime.now(timezone.utc).isoformat())
+            self.db.complete_job(job_id, False, error)
+        except Exception as db_exc:
+            self.logger.error("[%s] Could not record failure in DB (job #%d): %s — original error: %s", identifier, job_id, db_exc, error)
+
     def _touch_issue_updated(self, issue_id: str) -> None:
         """Bump last_updated_at so the poller won't re-scan old comments."""
         now = datetime.now(timezone.utc).isoformat()
@@ -416,16 +424,13 @@ class Orchestrator:
 
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 self.logger.error("[%s] Network error (job #%d): %s", identifier, job_id, exc)
-                self.db.upsert_session(job_id, issue_id, identifier, "failed", str(session_dir), None, datetime.now(timezone.utc).isoformat())
-                self.db.complete_job(job_id, False, f"Network error: {exc}")
+                self._safe_mark_failed(job_id, issue_id, identifier, session_dir, f"Network error: {exc}")
             except LinearAPIError as exc:
                 self.logger.error("[%s] Linear API error (job #%d): %s", identifier, job_id, exc)
-                self.db.upsert_session(job_id, issue_id, identifier, "failed", str(session_dir), None, datetime.now(timezone.utc).isoformat())
-                self.db.complete_job(job_id, False, str(exc))
+                self._safe_mark_failed(job_id, issue_id, identifier, session_dir, str(exc))
             except Exception as exc:
                 self.logger.exception("[%s] Unexpected error (job #%d): %s", identifier, job_id, exc)
-                self.db.upsert_session(job_id, issue_id, identifier, "failed", str(session_dir), None, datetime.now(timezone.utc).isoformat())
-                self.db.complete_job(job_id, False, str(exc))
+                self._safe_mark_failed(job_id, issue_id, identifier, session_dir, str(exc))
 
     def _build_prompt(
         self,
@@ -825,6 +830,8 @@ Commit with: `fix: {issue['title']} ({issue['identifier']})` for bugs, or `feat:
                     self.logger.warning("Requeued %d stale job(s) stuck in running state", count)
             except Exception as exc:
                 self.logger.error("Reaper error: %s", exc)
+            # Periodically checkpoint WAL to prevent unbounded growth
+            self.db.wal_checkpoint()
 
     async def _cleanup_loop(self) -> None:
         while not self.stop_event.is_set():

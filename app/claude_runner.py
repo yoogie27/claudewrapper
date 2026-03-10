@@ -104,13 +104,20 @@ class ClaudeRunner:
             # Read stdout line by line, flush each to disk immediately.
             # Use readline() instead of iterating — the iterator uses an
             # internal read buffer that delays output on Windows.
+            disk_full = False
             with open(stdout_path, "w", encoding="utf-8") as out_f:
                 while True:
                     line = proc.stdout.readline()
                     if not line:
                         break
-                    out_f.write(line)
-                    out_f.flush()
+                    if not disk_full:
+                        try:
+                            out_f.write(line)
+                            out_f.flush()
+                        except OSError:
+                            disk_full = True
+                            # Stop writing but keep draining stdout so the
+                            # subprocess doesn't block on a full pipe.
             proc.wait()
 
         stdout = stdout_path.read_text(encoding="utf-8", errors="replace")

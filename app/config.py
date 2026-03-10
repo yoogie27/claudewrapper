@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     max_issues_per_poll: int = Field(default=100, alias="MAX_ISSUES_PER_POLL")
 
     data_dir: str = Field(default="./data", alias="DATA_DIR")
-    web_host: str = Field(default="0.0.0.0", alias="WEB_HOST")
+    web_host: str = Field(default="127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(default=8645, alias="WEB_PORT")
     test_mode: bool = Field(default=False, alias="TEST_MODE")
     repo_roots: str = Field(default="", alias="REPO_ROOTS")

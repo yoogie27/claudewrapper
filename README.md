@@ -4,6 +4,8 @@
 
 ClaudeWrapper is a self-hosted orchestration server that watches your Linear board and automatically dispatches Claude Code to work through your tickets — one isolated git worktree per issue, streamed logs in your browser, results posted back to Linear.
 
+> **Security warning:** This application has not been security-reviewed. It executes arbitrary code via Claude Code and exposes a web UI with no authentication. It listens on `127.0.0.1` (localhost only) by default. **Do not expose it to the network** unless you put it behind a reverse proxy with proper authentication.
+
 ---
 
 ## The story
@@ -166,7 +168,7 @@ All settings live in `.env`.
 | `POLL_INTERVAL_SECONDS` | `60` | How often to poll Linear for new issues |
 | `WORKER_COUNT` | `3` | Parallel Claude sessions |
 | `DATA_DIR` | `./data` | Where sessions, worktrees, and the DB live |
-| `WEB_HOST` | `0.0.0.0` | Bind address |
+| `WEB_HOST` | `127.0.0.1` | Bind address (localhost only — see security warning) |
 | `WEB_PORT` | `8645` | Port |
 | `TEST_MODE` | `false` | Dry-run — captures prompts, never runs Claude |
 | `SESSION_TTL_DAYS` | `30` | Age at which sessions are cleaned up |
@@ -366,7 +368,7 @@ Use `nssm install claudewrapper claudewrapper` and set the working directory to 
 
 ### Docker (bring your own Dockerfile)
 
-The server binds to `0.0.0.0:8645` by default. Mount your `.env` and `./data` volume. Claude Code must be installed inside the image and authenticated (mount `~/.claude` from the host or bake credentials in at build time).
+The server binds to `127.0.0.1:8645` by default — set `WEB_HOST=0.0.0.0` inside Docker. Mount your `.env` and `./data` volume. Claude Code must be installed inside the image and authenticated (mount `~/.claude` from the host or bake credentials in at build time).
 
 ---
 
