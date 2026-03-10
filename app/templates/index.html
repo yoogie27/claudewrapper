@@ -136,6 +136,12 @@
               <input type="hidden" name="identifier" value="{{ s['identifier'] }}" />
               <button type="submit" class="btn btn-sm btn-secondary">Retry</button>
             </form>
+            {% if s["status"] != "running" %}
+            <form method="post" action="/api/cleanup" style="display:inline" title="Remove worktree, session files, and DB entry" data-confirm="Delete worktree and session data for {{ s['identifier'] }}?">
+              <input type="hidden" name="identifier" value="{{ s['identifier'] }}" />
+              <button type="submit" class="btn btn-sm btn-danger">Clean</button>
+            </form>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -238,36 +244,43 @@
   // Auto-refresh every 5s (only when tab is visible)
   setInterval(() => { if (!document.hidden) location.reload(); }, 5000);
 
-  // Health polling
+  // Health polling — cache in sessionStorage to avoid flicker on reload
   function pctColor(pct) {
     if (pct > 90) return 'var(--error)';
     if (pct > 75) return 'var(--warning)';
     return 'var(--success)';
   }
 
+  function applyHealth(h) {
+    if (h.disk) {
+      document.getElementById('h-disk').innerHTML =
+        '<span style="color:'+pctColor(h.disk.used_pct)+'">'+h.disk.free_gb+' GB</span>';
+      document.getElementById('h-disk-sub').textContent =
+        h.disk.used_pct+'% used of '+h.disk.total_gb+' GB';
+    }
+    if (h.memory) {
+      document.getElementById('h-mem').innerHTML =
+        '<span style="color:'+pctColor(h.memory.used_pct)+'">'+h.memory.free_gb+' GB</span>';
+      document.getElementById('h-mem-sub').textContent =
+        h.memory.used_pct+'% used of '+h.memory.total_gb+' GB';
+    }
+    document.getElementById('h-claude').textContent = h.claude_version || 'not found';
+    document.getElementById('h-git').textContent = h.git_version ? h.git_version.replace('git version ','') : 'not found';
+    document.getElementById('health-updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+  }
+
+  // Restore cached health data immediately to prevent flicker
+  try {
+    const cached = sessionStorage.getItem('health');
+    if (cached) applyHealth(JSON.parse(cached));
+  } catch(e) {}
+
   async function pollHealth() {
     try {
       const resp = await fetch('/api/health');
       const h = await resp.json();
-
-      if (h.disk) {
-        document.getElementById('h-disk').innerHTML =
-          '<span style="color:'+pctColor(h.disk.used_pct)+'">'+h.disk.free_gb+' GB</span>';
-        document.getElementById('h-disk-sub').textContent =
-          h.disk.used_pct+'% used of '+h.disk.total_gb+' GB';
-      }
-
-      if (h.memory) {
-        document.getElementById('h-mem').innerHTML =
-          '<span style="color:'+pctColor(h.memory.used_pct)+'">'+h.memory.free_gb+' GB</span>';
-        document.getElementById('h-mem-sub').textContent =
-          h.memory.used_pct+'% used of '+h.memory.total_gb+' GB';
-      }
-
-      document.getElementById('h-claude').textContent = h.claude_version || 'not found';
-      document.getElementById('h-git').textContent = h.git_version ? h.git_version.replace('git version ','') : 'not found';
-
-      document.getElementById('health-updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+      applyHealth(h);
+      sessionStorage.setItem('health', JSON.stringify(h));
     } catch(e) {}
   }
 

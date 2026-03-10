@@ -333,6 +333,16 @@ async def reprocess_session(request: Request, identifier: str = Form(...)) -> An
     return RedirectResponse(url=referer, status_code=303)
 
 
+@app.post("/api/cleanup")
+async def cleanup_session(request: Request, identifier: str = Form(...)) -> Any:
+    """Remove worktree, session files, and DB row for a ticket."""
+    ok, msg = orchestrator.cleanup_session(identifier)
+    if not ok:
+        return PlainTextResponse(msg, status_code=400)
+    referer = request.headers.get("referer", "/")
+    return RedirectResponse(url=referer, status_code=303)
+
+
 @app.post("/api/trigger")
 async def trigger_ticket(
     identifier: str = Form(""),

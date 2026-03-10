@@ -56,6 +56,18 @@
   </main>
 
   {% block scripts %}{% endblock %}
+<!-- Confirm modal -->
+<div id="confirm-modal" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <div class="modal-title" id="confirm-title">Are you sure?</div>
+    <div class="modal-body" id="confirm-body"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="confirm-cancel">Cancel</button>
+      <button class="btn btn-danger" id="confirm-ok">Delete</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast-container"></div>
 <script>
   // ── Theme toggle ──
@@ -98,6 +110,46 @@
     el.classList.add('removing');
     setTimeout(function() { el.remove(); }, 200);
   };
+
+  // ── Confirm modal ──
+  // Usage: add data-confirm="message" to a form to require confirmation before submit
+  (function() {
+    var overlay = document.getElementById('confirm-modal');
+    var bodyEl  = document.getElementById('confirm-body');
+    var okBtn   = document.getElementById('confirm-ok');
+    var cancelBtn = document.getElementById('confirm-cancel');
+    var pendingForm = null;
+
+    document.addEventListener('submit', function(e) {
+      var form = e.target;
+      if (!form.dataset.confirm) return;
+      e.preventDefault();
+      bodyEl.textContent = form.dataset.confirm;
+      overlay.style.display = '';
+      pendingForm = form;
+    });
+
+    okBtn.addEventListener('click', function() {
+      overlay.style.display = 'none';
+      if (pendingForm) {
+        pendingForm.removeAttribute('data-confirm');
+        pendingForm.requestSubmit();
+        pendingForm = null;
+      }
+    });
+
+    cancelBtn.addEventListener('click', function() {
+      overlay.style.display = 'none';
+      pendingForm = null;
+    });
+
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) {
+        overlay.style.display = 'none';
+        pendingForm = null;
+      }
+    });
+  })();
 </script>
 </body>
 </html>

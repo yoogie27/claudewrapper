@@ -773,6 +773,56 @@ Commit with: `fix: {issue['title']} ({issue['identifier']})` for bugs, or `feat:
         self.logger.info("[%s] Reprocess complete (status: %s)", identifier, status)
         return True, f"Reprocessed — status: {status}"
 
+    def cleanup_session(self, identifier: str) -> tuple[bool, str]:
+        """Remove worktree, session files, and DB row for a ticket."""
+        session = self.db.get_latest_session_by_identifier(identifier)
+        if not session:
+            return False, "No session found"
+        if session["status"] == "running":
+            return False, "Cannot clean up a running session"
+
+        removed = []
+
+        # Remove git worktree
+        session_dir = Path(session["session_dir"])
+        meta = read_worktree_meta(session_dir)
+        if meta and meta.get("repo") and meta.get("worktree"):
+            try:
+                remove_worktree(Path(meta["repo"]), Path(meta["worktree"]))
+                removed.append("worktree")
+            except Exception as exc:
+                self.logger.error("[%s] Failed to remove worktree: %s", identifier, exc)
+
+        # Also try the default worktree path (covers cases where meta is missing)
+        wt_path = Path(self.settings.worktree_root).resolve() / identifier
+        if wt_path.exists():
+            try:
+                shutil.rmtree(str(wt_path), ignore_errors=True)
+                if "worktree" not in removed:
+                    removed.append("worktree")
+            except Exception as exc:
+                self.logger.error("[%s] Failed to delete worktree dir: %s", identifier, exc)
+
+        # Remove session files
+        identifier_dir = self.settings.data_path() / "sessions" / identifier
+        if identifier_dir.exists():
+            try:
+                shutil.rmtree(str(identifier_dir), ignore_errors=True)
+                removed.append("session files")
+            except Exception as exc:
+                self.logger.error("[%s] Failed to delete session dir: %s", identifier, exc)
+
+        # Remove DB row
+        try:
+            self.db._conn.execute("DELETE FROM sessions WHERE identifier = ?", (identifier,))
+            self.db._conn.commit()
+            removed.append("db row")
+        except Exception as exc:
+            self.logger.error("[%s] Failed to delete session row: %s", identifier, exc)
+
+        self.logger.info("[%s] Cleanup complete: %s", identifier, ", ".join(removed) or "nothing to remove")
+        return True, f"Cleaned up: {', '.join(removed)}" if removed else (True, "Nothing to remove")
+
     async def enqueue_team_tickets(self, team_id: str) -> int:
         """Fetch all open tickets for a team and enqueue them as jobs.
 

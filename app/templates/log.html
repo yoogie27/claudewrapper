@@ -41,6 +41,12 @@
     <a href="{{ pr_url }}" target="_blank" class="btn btn-sm btn-secondary">View PR</a>
     {% endif %}
     <a href="/sessions/{{ identifier }}/prompt" class="btn btn-sm btn-secondary">View Prompt</a>
+    {% if status != "running" %}
+    <form method="post" action="/api/cleanup" style="display:inline" title="Remove worktree, session files, and DB entry" data-confirm="Delete worktree and session data for {{ identifier }}?">
+      <input type="hidden" name="identifier" value="{{ identifier }}" />
+      <button type="submit" class="btn btn-sm btn-danger">Clean</button>
+    </form>
+    {% endif %}
     <a href="/" class="btn btn-sm btn-secondary">Dashboard</a>
   </div>
 </div>
