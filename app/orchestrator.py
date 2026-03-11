@@ -327,11 +327,7 @@ class Orchestrator:
 
                 if self.settings.use_git_worktrees and workdir:
                     worktree_root = Path(self.settings.worktree_root)
-                    # Start fresh from latest main for new jobs so there are no
-                    # conflicts with previously merged branches.  Retries keep
-                    # the existing worktree state (preserves prior work).
-                    fresh = reason not in ("retry", "retry_job", "feedback")
-                    worktree_path = ensure_worktree(workdir, worktree_root, identifier, fresh=fresh)
+                    worktree_path = ensure_worktree(workdir, worktree_root, identifier)
                     write_worktree_meta(session_dir, workdir, worktree_path)
                     workdir = worktree_path
 

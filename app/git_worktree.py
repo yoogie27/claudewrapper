@@ -32,7 +32,7 @@ def get_default_branch(repo: Path) -> str:
     return "main"
 
 
-def ensure_worktree(repo: Path, worktree_root: Path, identifier: str, fresh: bool = False) -> Path:
+def ensure_worktree(repo: Path, worktree_root: Path, identifier: str) -> Path:
     repo = repo.resolve()
     worktree_root = worktree_root.resolve()
     worktree_root.mkdir(parents=True, exist_ok=True)
@@ -48,15 +48,26 @@ def ensure_worktree(repo: Path, worktree_root: Path, identifier: str, fresh: boo
         base_ref = base
 
     if worktree_path.exists():
-        if fresh:
-            # Reset the worktree branch to latest main so the next job
-            # starts clean (e.g. after the previous PR was merged).
+        # Always reset to latest main.  With concurrency=1 per project
+        # there is no in-progress work to preserve, and starting from a
+        # stale base causes merge-conflict failures on the resulting PR.
+        try:
+            _run(["git", "-C", str(worktree_path), "checkout", branch])
+            _run(["git", "-C", str(worktree_path), "reset", "--hard", base_ref])
+            _run(["git", "-C", str(worktree_path), "clean", "-fd"])
+        except Exception:
+            # Reset failed — tear down and recreate below
             try:
-                _run(["git", "-C", str(worktree_path), "checkout", branch])
-                _run(["git", "-C", str(worktree_path), "reset", "--hard", base_ref])
+                _run(["git", "-C", str(repo), "worktree", "remove", "-f", str(worktree_path)])
             except Exception:
-                pass  # If reset fails, the worktree is still usable
-        return worktree_path
+                import shutil
+                shutil.rmtree(worktree_path, ignore_errors=True)
+                try:
+                    _run(["git", "-C", str(repo), "worktree", "prune"])
+                except Exception:
+                    pass
+        else:
+            return worktree_path
 
     # Prune stale worktree records (e.g. after manual cleanup or disk wipe)
     # so git doesn't refuse to reuse the branch name.
