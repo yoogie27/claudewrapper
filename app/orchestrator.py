@@ -966,7 +966,7 @@ Commit with: `fix: {issue['title']} ({issue['identifier']})` for bugs, or `feat:
         return None
 
     async def _merge_github_pr(self, pr_url: str) -> bool:
-        """Merge a GitHub PR via API. Returns True on success."""
+        """Merge a GitHub PR via API. Retries a few times for newly-created PRs."""
         if not self.settings.github_token:
             return False
         import re
@@ -974,20 +974,28 @@ Commit with: `fix: {issue['title']} ({issue['identifier']})` for bugs, or `feat:
         if not m:
             return False
         owner, repo, pr_number = m.group(1), m.group(2), m.group(3)
+        delays = [5, 10, 20]  # seconds between retries
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.put(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/merge",
-                    headers={
-                        "Authorization": f"Bearer {self.settings.github_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    json={"merge_method": "squash"},
-                )
-                if resp.status_code == 200:
-                    return True
-                self.logger.warning("GitHub merge failed: %s %s", resp.status_code, resp.text[:200])
+                for attempt in range(len(delays) + 1):
+                    resp = await client.put(
+                        f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/merge",
+                        headers={
+                            "Authorization": f"Bearer {self.settings.github_token}",
+                            "Accept": "application/vnd.github+json",
+                            "X-GitHub-Api-Version": "2022-11-28",
+                        },
+                        json={"merge_method": "squash"},
+                    )
+                    if resp.status_code == 200:
+                        return True
+                    # 405 = "not mergeable" — GitHub may still be computing mergeability
+                    if resp.status_code == 405 and attempt < len(delays):
+                        self.logger.info("PR not yet mergeable, retrying in %ds (%d/%d)", delays[attempt], attempt + 1, len(delays))
+                        await asyncio.sleep(delays[attempt])
+                        continue
+                    self.logger.warning("GitHub merge failed: %s %s", resp.status_code, resp.text[:200])
+                    return False
         except Exception as exc:
             self.logger.warning("GitHub merge error: %s", exc)
         return False
