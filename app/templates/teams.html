@@ -46,15 +46,34 @@
     <input type="hidden" name="team_name" value="{{ t.name }}" />
 
     <div class="form-group">
+      <label>GitHub Repository URL</label>
+      <input type="text" name="github_repo_url" value="{{ m['github_repo_url'] if m and m['github_repo_url'] else '' }}"
+             placeholder="https://github.com/owner/repo or git@github.com:owner/repo.git" />
+      <div class="hint">Optional. Auto-clones and manages the repo when SSH_KEY_DIR and REPOS_DIR are configured.</div>
+      {% if m and m['github_repo_url'] %}
+      <div class="repo-clone-status" data-team="{{ t.id }}" style="margin-top:4px;">
+        {% if m['clone_status'] == 'cloned' %}
+        <span class="badge badge-enabled">Cloned</span>
+        {% elif m['clone_status'] == 'cloning' %}
+        <span class="badge badge-test">Cloning...</span>
+        {% elif m['clone_status'] and m['clone_status'].startswith('error') %}
+        <span class="badge badge-failed">{{ m['clone_status'] }}</span>
+        {% endif %}
+        <button type="button" class="btn btn-sm btn-secondary reclone-btn" data-team="{{ t.id }}" style="margin-left:4px;">Re-clone</button>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="form-group">
       <label>Local Repository Path</label>
       <input type="hidden" name="local_path" value="{{ m['local_path'] if m else '' }}" />
       <div class="flex gap-8" style="align-items:center">
         <div style="flex:1; padding:8px 12px; background:var(--bg); border-radius:6px; font-family:var(--mono); font-size:.85rem;">
-          {{ m['local_path'] if m else '(not set — pick a folder)' }}
+          {{ m['local_path'] if m else '(not set — pick a folder or use GitHub URL above)' }}
         </div>
         <a href="/picker?team_id={{ t.id }}&team_name={{ t.name | urlencode }}" class="btn btn-sm btn-secondary">Pick folder</a>
       </div>
-      <div class="hint">Available roots: {{ root_dirs | join(", ") }}</div>
+      <div class="hint">Set automatically when using GitHub URL, or pick manually. Roots: {{ root_dirs | join(", ") }}</div>
     </div>
 
     <div class="form-group">
@@ -250,5 +269,46 @@ function renderMcpStatus(el, data, path) {
     });
   });
 }
+
+// Re-clone buttons
+document.querySelectorAll('.reclone-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = 'Cloning...';
+    const body = new URLSearchParams({ team_id: btn.dataset.team });
+    try {
+      const resp = await fetch('/api/repo/clone', { method: 'POST', body });
+      const data = await resp.json();
+      if (data.ok) {
+        btn.textContent = 'Started';
+        // Poll for status
+        const poll = setInterval(async () => {
+          const sr = await fetch('/api/repo/status?team_id=' + encodeURIComponent(btn.dataset.team));
+          const sd = await sr.json();
+          const statusEl = btn.closest('.repo-clone-status');
+          if (sd.clone_status === 'cloned') {
+            clearInterval(poll);
+            statusEl.querySelector('.badge').className = 'badge badge-enabled';
+            statusEl.querySelector('.badge').textContent = 'Cloned';
+            btn.textContent = 'Re-clone';
+            btn.disabled = false;
+          } else if (sd.clone_status && sd.clone_status.startsWith('error')) {
+            clearInterval(poll);
+            statusEl.querySelector('.badge').className = 'badge badge-failed';
+            statusEl.querySelector('.badge').textContent = sd.clone_status;
+            btn.textContent = 'Re-clone';
+            btn.disabled = false;
+          }
+        }, 3000);
+      } else {
+        btn.textContent = 'Failed';
+        btn.disabled = false;
+      }
+    } catch(e) {
+      btn.textContent = 'Error';
+      btn.disabled = false;
+    }
+  });
+});
 </script>
 {% endblock %}

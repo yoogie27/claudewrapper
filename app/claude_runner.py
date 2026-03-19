@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -65,6 +66,7 @@ class ClaudeRunner:
         workdir: Path | None,
         proc_holder: dict | None = None,
         resume_session_id: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
         session_dir.mkdir(parents=True, exist_ok=True)
         prompt_path = session_dir / "prompt.txt"
@@ -82,6 +84,7 @@ class ClaudeRunner:
             cmd = cmd + [self.prompt_arg, prompt_text]
 
         cflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        proc_env = {**os.environ, **extra_env} if extra_env else None
 
         # Use PIPE for stdout so we can flush each line to disk immediately.
         # Writing directly to a file (stdout=file) buffers on Windows and
@@ -93,6 +96,7 @@ class ClaudeRunner:
                 stdout=subprocess.PIPE, stderr=err_f,
                 encoding="utf-8", errors="replace",
                 creationflags=cflags, bufsize=1,  # line-buffered
+                env=proc_env,
             )
             if proc_holder is not None:
                 proc_holder["proc"] = proc

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -10,8 +11,31 @@ class GitWorktreeError(RuntimeError):
     pass
 
 
-def _run(cmd: list[str], cwd: Path | None = None) -> str:
-    result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+class GitPushError(GitWorktreeError):
+    """Push failure with a classified error type for actionable diagnostics."""
+
+    def __init__(self, message: str, error_type: str):
+        super().__init__(message)
+        self.error_type = error_type  # host_key, auth, branch_exists, network, unknown
+
+
+def _classify_push_error(stderr: str) -> str:
+    """Classify a git push/fetch error for actionable logging."""
+    s = stderr.lower()
+    if "host key verification failed" in s or "known_hosts" in s or "authenticity of host" in s:
+        return "host_key"
+    if "permission denied" in s or "publickey" in s or "could not read from remote" in s:
+        return "auth"
+    if "non-fast-forward" in s or "[rejected]" in s or "already exists" in s:
+        return "branch_exists"
+    if "unable to access" in s or "could not resolve" in s or "connection refused" in s:
+        return "network"
+    return "unknown"
+
+
+def _run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
+    run_env = {**os.environ, **env} if env else None
+    result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, env=run_env)
     if result.returncode != 0:
         raise GitWorktreeError(result.stderr.strip() or result.stdout.strip() or "git command failed")
     return (result.stdout or "").strip()
@@ -32,7 +56,7 @@ def get_default_branch(repo: Path) -> str:
     return "main"
 
 
-def ensure_worktree(repo: Path, worktree_root: Path, identifier: str) -> Path:
+def ensure_worktree(repo: Path, worktree_root: Path, identifier: str, env: dict[str, str] | None = None) -> Path:
     repo = repo.resolve()
     worktree_root = worktree_root.resolve()
     worktree_root.mkdir(parents=True, exist_ok=True)
@@ -42,7 +66,7 @@ def ensure_worktree(repo: Path, worktree_root: Path, identifier: str) -> Path:
 
     base = get_default_branch(repo)
     try:
-        _run(["git", "-C", str(repo), "fetch", "origin", base])
+        _run(["git", "-C", str(repo), "fetch", "origin", base], env=env)
         base_ref = f"origin/{base}"
     except Exception:
         base_ref = base
@@ -126,8 +150,19 @@ def get_commit_count_vs_base(worktree: Path, base_ref: str) -> int:
         return 0
 
 
-def push_branch(worktree: Path, branch: str) -> None:
-    _run(["git", "-C", str(worktree), "push", "-u", "origin", branch])
+def push_branch(worktree: Path, branch: str, env: dict[str, str] | None = None) -> None:
+    try:
+        _run(["git", "-C", str(worktree), "push", "-u", "origin", branch], env=env)
+    except GitWorktreeError as exc:
+        error_type = _classify_push_error(str(exc))
+        if error_type == "branch_exists":
+            # Safe for ticket branches: force-with-lease to update
+            try:
+                _run(["git", "-C", str(worktree), "push", "-u", "--force-with-lease", "origin", branch], env=env)
+                return
+            except GitWorktreeError as retry_exc:
+                raise GitPushError(str(retry_exc), _classify_push_error(str(retry_exc))) from retry_exc
+        raise GitPushError(str(exc), error_type) from exc
 
 
 def parse_github_remote(repo: Path) -> tuple[str, str] | None:

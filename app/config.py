@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     linear_webhook_secret: str = Field(default="", alias="LINEAR_WEBHOOK_SECRET")
     github_token: str = Field(default="", alias="GITHUB_TOKEN")
 
+    ssh_key_dir: str = Field(default="", alias="SSH_KEY_DIR")
+    repos_dir: str = Field(default="", alias="REPOS_DIR")
+
 
     def data_path(self) -> Path:
         return Path(self.data_dir).resolve()

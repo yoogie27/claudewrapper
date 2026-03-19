@@ -14,6 +14,7 @@ from app.db import Database
 from app.linear_client import LinearClient, LinearAPIError
 from app.utils import setup_logger
 from app.git_worktree import (
+    GitPushError,
     ensure_worktree,
     get_commit_count_vs_base,
     get_default_branch,
@@ -23,6 +24,8 @@ from app.git_worktree import (
     remove_worktree,
     write_worktree_meta,
 )
+from app.sanitize import fence_user_content, sanitize_for_prompt, validate_identifier, safe_identifier
+from app.ssh import get_git_ssh_env
 
 # Old generic prompts that should be replaced by the new default
 _OLD_GENERIC_PROMPTS = {
@@ -79,6 +82,15 @@ class Orchestrator:
             asyncio.create_task(self._worker_loop(f"worker-{i+1}"))
         asyncio.create_task(self._cleanup_loop())
         asyncio.create_task(self._reaper_loop())
+
+    def _get_git_ssh_env(self) -> dict[str, str] | None:
+        """Build GIT_SSH_COMMAND env dict if SSH keys are configured."""
+        if not self.settings.ssh_key_dir:
+            return None
+        key_dir = Path(self.settings.ssh_key_dir)
+        if (key_dir / "id_ed25519").exists():
+            return get_git_ssh_env(key_dir)
+        return None
 
     # Hidden marker appended to every comment we post.
     # Used to identify (and ignore) our own comments during polling.
@@ -204,28 +216,46 @@ class Orchestrator:
         }
         self.logger.info("MCP config prepared for injection into workdirs")
 
+    # Adaptive polling intervals (seconds).  After activity the loop polls
+    # aggressively; when nothing happens it backs off to save API quota.
+    _POLL_FAST = 10        # right after a ticket was found
+    _POLL_STEPS = [10, 30, 60, 120, 300, 600]  # progressive back-off
+    _POLL_MAX = 600        # ceiling = 10 minutes
+
     async def _poll_loop(self) -> None:
+        step_idx = 0  # index into _POLL_STEPS (0 = fastest)
         while not self.stop_event.is_set():
             try:
-                await self._poll_once()
+                found = await self._poll_once()
+                if found:
+                    # Activity detected → reset to fastest polling
+                    step_idx = 0
+                    self.logger.info("Poll: activity detected, interval → %ds", self._POLL_FAST)
+                else:
+                    # No activity → advance one step toward the ceiling
+                    step_idx = min(step_idx + 1, len(self._POLL_STEPS) - 1)
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 self.logger.warning("Poll: network error (%s)", exc)
+                step_idx = min(step_idx + 1, len(self._POLL_STEPS) - 1)
             except LinearAPIError as exc:
                 self.logger.error("Poll: %s", exc)
             except Exception as exc:
                 self.logger.exception("Poll: unexpected error: %s", exc)
-            await asyncio.sleep(self.settings.poll_interval_seconds)
+            interval = self._POLL_STEPS[step_idx]
+            await asyncio.sleep(interval)
 
-    async def _poll_once(self) -> None:
+    async def _poll_once(self) -> bool:
+        """Poll Linear for updated issues. Returns True if any job was enqueued."""
         if not self.settings.linear_api_key:
             self.logger.error("LINEAR_API_KEY missing. Polling disabled.")
-            return
+            return False
         last_poll = self.db.get_config("last_poll")
         if not last_poll:
             last_poll = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
 
         issues = await self.linear.get_issues_updated_since(last_poll, first=self.settings.max_issues_per_poll)
         now_iso = datetime.now(timezone.utc).isoformat()
+        enqueued = False
 
         for issue in issues:
             issue_id = issue["id"]
@@ -270,6 +300,7 @@ class Orchestrator:
                 mapping = self.db.get_team_mapping(team_id)
                 if mapping and mapping["enabled"] and mapping["auto_process"]:
                     self.db.enqueue_job(issue_id, identifier, team_id, reason)
+                    enqueued = True
 
             self.db.upsert_issue_state(
                 issue_id=issue_id,
@@ -284,6 +315,7 @@ class Orchestrator:
             )
 
         self.db.set_config("last_poll", now_iso)
+        return enqueued
 
     async def _worker_loop(self, worker_id: str) -> None:
         while not self.stop_event.is_set():
@@ -294,7 +326,7 @@ class Orchestrator:
 
             job_id = job["id"]
             issue_id = job["issue_id"]
-            identifier = job["identifier"]
+            identifier = safe_identifier(job["identifier"])
             team_id = job["team_id"]
             reason = job["reason"]
             self.logger.info("[%s] Job #%d dequeued (reason: %s)", identifier, job_id, job["reason"])
@@ -325,9 +357,11 @@ class Orchestrator:
                 if self.settings.claude_workdir_mode in ("team_path", "repo_root"):
                     workdir = Path(mapping["local_path"]).resolve()
 
+                ssh_env = self._get_git_ssh_env()
+
                 if self.settings.use_git_worktrees and workdir:
                     worktree_root = Path(self.settings.worktree_root)
-                    worktree_path = ensure_worktree(workdir, worktree_root, identifier)
+                    worktree_path = ensure_worktree(workdir, worktree_root, identifier, env=ssh_env)
                     write_worktree_meta(session_dir, workdir, worktree_path)
                     workdir = worktree_path
 
@@ -357,7 +391,7 @@ class Orchestrator:
                     try:
                         result = await asyncio.to_thread(
                             self.runner.run, identifier, prompt, session_dir, workdir,
-                            proc_holder, resume_id,
+                            proc_holder, resume_id, ssh_env,
                         )
                     finally:
                         self._proc_holders.pop(job_id, None)
@@ -378,6 +412,11 @@ class Orchestrator:
                         self.logger.warning("[%s] Claude failed (exit %d). stderr tail:\n%s", identifier, result.returncode, stderr_tail)
 
                 # ── Post-processing (runs for both test and real modes) ──
+                # Bump timestamp BEFORE posting comments/changing state so that
+                # webhooks and the poller triggered by our own changes don't
+                # re-enqueue this issue.
+                self._touch_issue_updated(issue_id)
+
                 summary, hitl = self._summarize_result(stdout_text)
                 if summary:
                     await self._post_comment(issue_id, summary)
@@ -406,7 +445,7 @@ class Orchestrator:
                 if ok:
                     self.logger.info("[%s] Completed successfully (status: %s)", identifier, status)
 
-                # Bump last_updated_at so the poller ignores the changes we just made
+                # Bump again after all comments/state changes to cover the full window
                 self._touch_issue_updated(issue_id)
 
                 self.db.upsert_session(job_id, issue_id, identifier, status, str(session_dir), None, datetime.now(timezone.utc).isoformat())
@@ -447,11 +486,18 @@ class Orchestrator:
 
         closed_list = "\n".join([f"- {c['identifier']}: {c['title']} ({c['url']})" for c in closed]) or "(none)"
 
+        # Sanitize and fence user-supplied content to limit prompt injection
+        description_raw = sanitize_for_prompt(issue.get("description") or "")
+        description = fence_user_content(description_raw, "ticket description") if description_raw else "(no description)"
+
         comments = issue.get("comments", {}).get("nodes", [])
-        comment_text = "\n\n".join([
-            f"[{c.get('createdAt', '')}] {(c.get('user') or {}).get('name', 'Unknown')}: {c.get('body', '')}"
-            for c in comments
-        ]) or "(no comments)"
+        comment_parts = []
+        for c in comments:
+            body = sanitize_for_prompt(c.get("body", ""), max_length=10_000)
+            user_name = (c.get("user") or {}).get("name", "Unknown")
+            ts = c.get("createdAt", "")
+            comment_parts.append(f"[{ts}] {user_name}:\n{fence_user_content(body, f'comment by {user_name}')}")
+        comment_text = "\n\n".join(comment_parts) or "(no comments)"
 
         # Determine strategy based on labels and reason
         label_lower = {l.lower() for l in labels_list}
@@ -466,6 +512,24 @@ class Orchestrator:
                 "3. Fix the root cause, not just symptoms.\n"
                 "4. Validate the fix with tests. If no tests exist, add at least one."
             )
+            pre_commit_review = (
+                "## Pre-Commit Review (MANDATORY)\n\n"
+                "**Do NOT commit, push, or create a PR until you have completed these steps:**\n\n"
+                "### Step 1: Write a regression test\n"
+                "Write a test that reproduces the original bug — a test that would FAIL on the "
+                "old code and PASS on your fix. This prevents the same bug from reappearing in the future. "
+                "Place the test alongside existing tests using the project's test framework and conventions.\n\n"
+                "### Step 2: Impact analysis\n"
+                "Examine whether the root cause affects other modules or systems:\n"
+                "- Are there similar patterns elsewhere in the codebase that have the same flaw?\n"
+                "- Could the bug manifest in related code paths or edge cases you haven't checked?\n"
+                "- Use `grep`, LSP find-references, and `git log -S` to find all call sites and related logic.\n"
+                "- If you find additional instances of the same problem, fix them as part of this change.\n\n"
+                "### Step 3: Run all tests\n"
+                "Run the full test suite. All tests must pass — including your new regression test — "
+                "before you proceed to commit.\n\n"
+                "Only after all three steps are complete: commit, push, and create the PR."
+            )
         else:
             strategy = (
                 "This is a **feature/task**. Plan before implementing:\n"
@@ -473,6 +537,27 @@ class Orchestrator:
                 "2. Check existing patterns in the codebase for consistency.\n"
                 "3. Implement incrementally, testing as you go.\n"
                 "4. Run existing tests to confirm no regressions."
+            )
+            pre_commit_review = (
+                "## Pre-Commit Review (MANDATORY)\n\n"
+                "**Do NOT commit, push, or create a PR until you have completed these steps:**\n\n"
+                "### Step 1: Self-review\n"
+                "Review all your changes with a critical eye. Specifically check for:\n"
+                "- **Correctness:** Are there logic errors, off-by-one mistakes, or wrong assumptions?\n"
+                "- **Race conditions:** Are there concurrency or timing issues (async, threads, shared state)?\n"
+                "- **Parameter handling:** Are all function parameters validated, typed correctly, and "
+                "passed through every layer? Check for mismatches between callers and callees.\n"
+                "- **Performance:** Have you introduced O(n^2) loops, unnecessary DB queries, repeated I/O, "
+                "or memory leaks? Compare to the existing performance characteristics.\n"
+                "- **Edge cases:** What happens with empty inputs, None values, missing keys, or very large data?\n"
+                "- **Security:** Any injection risks, exposed secrets, or unsafe deserialization?\n\n"
+                "If you find problems, fix them before proceeding.\n\n"
+                "### Step 2: Write tests\n"
+                "Add tests for the new functionality. Cover the happy path and at least one meaningful "
+                "edge case. Use the project's existing test framework and conventions.\n\n"
+                "### Step 3: Run all tests\n"
+                "Run the full test suite. All existing and new tests must pass before you proceed to commit.\n\n"
+                "Only after all three steps are complete: commit, push, and create the PR."
             )
 
         reopened_block = ""
@@ -505,7 +590,7 @@ class Orchestrator:
 
 ## Your Mission
 
-You are working on ticket **{issue['identifier']}**: "{issue['title']}".
+You are working on ticket **{issue['identifier']}**: "{sanitize_for_prompt(issue['title'], max_length=500)}".
 Trigger reason: **{reason}**
 {reopened_block}
 ## Ticket Details
@@ -522,7 +607,7 @@ Trigger reason: **{reason}**
 
 ## Description
 
-{issue.get("description") or "(no description)"}
+{description}
 
 ## Comments & Feedback
 
@@ -550,20 +635,23 @@ Before writing any code:
 ## Implementation Standards
 
 - Follow existing coding standards and patterns in the repository.
-- Run tests after your changes (`npm test`, `pytest`, or whatever the project uses).
-- If relevant tests don't exist, add basic coverage for your changes.
 - Keep changes focused — only modify what's needed for this ticket.
+- Do NOT commit or push yet — complete the Pre-Commit Review first.
+
+{pre_commit_review}
 
 ## Completion
 
-When you finish, write a structured comment on the Linear ticket:
+After the pre-commit review is complete and all tests pass:
+
+1. Commit with: `fix: {issue['title']} ({issue['identifier']})` for bugs, or `feat: {issue['title']} ({issue['identifier']})` for features.
+2. Push the branch and create a PR.
+3. Write a structured summary:
 
 **Summary:** What you changed and why.
 **Files modified:** Key files affected.
-**Testing:** How you validated the changes.
+**Testing:** How you validated — include which tests were added and that the full suite passes.
 **Notes:** Anything important for reviewers or follow-up.
-
-Commit with: `fix: {issue['title']} ({issue['identifier']})` for bugs, or `feat: {issue['title']} ({issue['identifier']})` for features.
 """
         return prompt
 
@@ -709,7 +797,8 @@ Commit with: `fix: {issue['title']} ({issue['identifier']})` for bugs, or `feat:
     async def reprocess_session(self, identifier: str) -> tuple[bool, str]:
         """Re-run post-processing (comment, state change, PR) for a session
         without re-running Claude.  Useful when Claude succeeded but
-        post-processing crashed."""
+        post-processing crashed.  Skips comments if already posted, reuses
+        existing PRs instead of creating duplicates."""
         session = self.db.get_latest_session_by_identifier(identifier)
         if not session:
             return False, "No session found"
@@ -735,8 +824,15 @@ Commit with: `fix: {issue['title']} ({issue['identifier']})` for bugs, or `feat:
 
         self.logger.info("[%s] Reprocessing session (post-processing only)", identifier)
 
+        # Bump timestamp BEFORE changes to prevent re-triggers
+        self._touch_issue_updated(issue_id)
+
+        # Only post the summary comment if we haven't already (check existing comments)
         summary, hitl = self._summarize_result(stdout_text)
-        if summary:
+        existing_comments = issue.get("comments", {}).get("nodes", [])
+        has_our_comment = any(self.is_own_comment(c.get("body", "")) for c in existing_comments)
+
+        if summary and not has_our_comment:
             await self._post_comment(issue_id, summary)
 
         status = "done"
@@ -745,12 +841,21 @@ Commit with: `fix: {issue['title']} ({issue['identifier']})` for bugs, or `feat:
             await self._set_hitl_state(issue_id, team_id)
         else:
             await self._set_named_state(issue_id, team_id, self._get_state_name("status_review", self.settings.review_state_name) or self._get_state_name("status_done", self.settings.done_state_name))
-            pr_url = await self._maybe_create_pr(issue, session_dir, identifier)
+            # Only create PR if we don't already have one
+            pr_url = session["pr_url"]
+            if not pr_url:
+                pr_url = await self._maybe_create_pr(issue, session_dir, identifier)
             if pr_url:
                 run_id = session["run_id"]
                 if run_id:
                     self.db.set_session_pr_url(run_id, pr_url)
-                await self._post_comment(issue_id, f"Pull request: {pr_url}")
+                # Only post PR comment if not already posted
+                pr_comment_exists = any(
+                    pr_url in c.get("body", "") and self.is_own_comment(c.get("body", ""))
+                    for c in existing_comments
+                )
+                if not pr_comment_exists:
+                    await self._post_comment(issue_id, f"Pull request: {pr_url}")
                 mapping = self.db.get_team_mapping(team_id)
                 if mapping and mapping["auto_merge"]:
                     merged = await self._merge_github_pr(pr_url)
@@ -758,7 +863,7 @@ Commit with: `fix: {issue['title']} ({issue['identifier']})` for bugs, or `feat:
                         self.logger.info("[%s] PR auto-merged: %s", identifier, pr_url)
                         await self._post_comment(issue_id, "PR automatically merged to main.")
 
-        # Bump last_updated_at so the poller ignores the changes we just made
+        # Bump again after all changes
         self._touch_issue_updated(issue_id)
 
         now = datetime.now(timezone.utc).isoformat()
@@ -931,14 +1036,42 @@ Commit with: `fix: {issue['title']} ({issue['identifier']})` for bugs, or `feat:
             return None
         owner, repo_name = github_info
 
+        ssh_env = self._get_git_ssh_env()
         try:
-            await asyncio.to_thread(push_branch, worktree, branch)
+            await asyncio.to_thread(push_branch, worktree, branch, ssh_env)
+        except GitPushError as exc:
+            error_hints = {
+                "auth": "Check that the SSH deploy key is added to the GitHub repo (Settings > Deploy keys with write access).",
+                "host_key": "SSH host key verification failed. Ensure SSH_KEY_DIR is configured and known_hosts is populated.",
+                "branch_exists": "Branch conflict on remote — force-with-lease also failed.",
+                "network": "Network error reaching remote. Check connectivity and remote URL.",
+            }
+            hint = error_hints.get(exc.error_type, "")
+            self.logger.error("[%s] Git push FAILED (%s): %s. %s", identifier, exc.error_type, exc, hint)
+            return None
         except Exception as exc:
-            self.logger.warning("Failed to push branch %s: %s", branch, exc)
+            self.logger.error("[%s] Git push FAILED (unexpected): %s", identifier, exc)
             return None
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
+                # Check for existing open PR on this branch before creating a new one
+                existing_resp = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo_name}/pulls",
+                    headers={
+                        "Authorization": f"Bearer {self.settings.github_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    params={"head": f"{owner}:{branch}", "state": "open"},
+                )
+                if existing_resp.status_code == 200:
+                    existing_prs = existing_resp.json()
+                    if existing_prs:
+                        existing_url = existing_prs[0].get("html_url")
+                        self.logger.info("[%s] PR already exists: %s", identifier, existing_url)
+                        return existing_url
+
                 resp = await client.post(
                     f"https://api.github.com/repos/{owner}/{repo_name}/pulls",
                     headers={
@@ -955,6 +1088,10 @@ Commit with: `fix: {issue['title']} ({issue['identifier']})` for bugs, or `feat:
                 )
                 if resp.status_code in (200, 201):
                     return resp.json().get("html_url")
+                # 422 often means PR already exists (e.g. from a different state)
+                if resp.status_code == 422:
+                    self.logger.info("[%s] PR creation returned 422 (likely already exists): %s", identifier, resp.text[:200])
+                    return None
                 self.logger.warning("GitHub PR creation failed: %s %s", resp.status_code, resp.text[:200])
         except Exception as exc:
             self.logger.warning("GitHub PR creation error: %s", exc)

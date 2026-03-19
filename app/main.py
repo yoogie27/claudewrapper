@@ -18,6 +18,9 @@ from app.db import Database
 from app.health import get_system_health, check_workspace_mcp, install_mcp_server
 from app.linear_client import LinearClient
 from app.orchestrator import Orchestrator, DEFAULT_PROMPT
+from app.ssh import setup_ssh, get_public_key, get_git_ssh_env
+from app.repo_manager import clone_or_fetch, get_clone_status, parse_repo_info
+from app.sanitize import validate_identifier
 
 
 db = Database(settings.data_path() / "app.db")
@@ -26,6 +29,13 @@ orchestrator = Orchestrator(settings, db)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize SSH keys if configured
+    if settings.ssh_key_dir:
+        try:
+            setup_ssh(Path(settings.ssh_key_dir))
+        except Exception as exc:
+            import logging
+            logging.getLogger("claudewrapper").warning("SSH setup failed: %s", exc)
     await orchestrator.start()
     yield
 
@@ -108,14 +118,54 @@ async def teams(request: Request) -> Any:
 async def set_mapping(
     team_id: str = Form(...),
     team_name: str = Form(...),
-    local_path: str = Form(...),
+    local_path: str = Form(""),
     default_prompt: str = Form(""),
     enabled: int = Form(0),
     auto_process: int = Form(0),
     auto_merge: int = Form(0),
+    github_repo_url: str = Form(""),
 ) -> Any:
-    db.upsert_team_mapping(team_id, team_name, local_path, default_prompt, bool(int(enabled)), auto_process=bool(auto_process), auto_merge=bool(auto_merge))
+    github_repo_url = github_repo_url.strip()
+
+    # If a GitHub URL is provided and repos_dir is configured, trigger auto-clone
+    if github_repo_url and settings.repos_dir:
+        repos_dir = Path(settings.repos_dir)
+        ssh_env = _get_ssh_env()
+        db.upsert_team_mapping(
+            team_id, team_name, local_path, default_prompt,
+            bool(int(enabled)), auto_process=bool(auto_process),
+            auto_merge=bool(auto_merge), github_repo_url=github_repo_url,
+        )
+        db.update_clone_status(team_id, "cloning")
+
+        async def _do_clone():
+            try:
+                ok, msg, path = await asyncio.to_thread(clone_or_fetch, github_repo_url, repos_dir, ssh_env)
+                if ok and path:
+                    db.update_clone_status(team_id, "cloned", str(path))
+                else:
+                    db.update_clone_status(team_id, f"error: {msg}")
+            except Exception as exc:
+                db.update_clone_status(team_id, f"error: {exc}")
+
+        asyncio.create_task(_do_clone())
+    else:
+        db.upsert_team_mapping(
+            team_id, team_name, local_path, default_prompt,
+            bool(int(enabled)), auto_process=bool(auto_process),
+            auto_merge=bool(auto_merge), github_repo_url=github_repo_url,
+        )
     return RedirectResponse(url="/teams", status_code=303)
+
+
+def _get_ssh_env() -> dict[str, str] | None:
+    """Helper to build SSH env from settings."""
+    if not settings.ssh_key_dir:
+        return None
+    key_dir = Path(settings.ssh_key_dir)
+    if (key_dir / "id_ed25519").exists():
+        return get_git_ssh_env(key_dir)
+    return None
 
 
 @app.post("/api/label-instruction")
@@ -206,6 +256,57 @@ async def api_health() -> Any:
     """System health metrics — polled by the dashboard."""
     health = await asyncio.to_thread(get_system_health)
     return JSONResponse(health)
+
+
+@app.get("/api/ssh/public-key")
+async def api_ssh_public_key() -> Any:
+    """Return the SSH public key for display in the UI."""
+    if not settings.ssh_key_dir:
+        return JSONResponse({"error": "SSH_KEY_DIR not configured"}, status_code=404)
+    key = get_public_key(Path(settings.ssh_key_dir))
+    if not key:
+        return JSONResponse({"error": "No SSH key generated yet"}, status_code=404)
+    return JSONResponse({"public_key": key})
+
+
+@app.get("/api/repo/status")
+async def api_repo_status(team_id: str) -> Any:
+    """Check clone status for a team's GitHub repo."""
+    mapping = db.get_team_mapping(team_id)
+    if not mapping or not mapping["github_repo_url"]:
+        return JSONResponse({"status": "not_configured", "message": "No GitHub repo URL configured"})
+    if not settings.repos_dir:
+        return JSONResponse({"status": "error", "message": "REPOS_DIR not configured"})
+    status = get_clone_status(Path(settings.repos_dir), mapping["github_repo_url"])
+    status["clone_status"] = mapping["clone_status"] or ""
+    return JSONResponse(status)
+
+
+@app.post("/api/repo/clone")
+async def api_repo_clone(team_id: str = Form(...)) -> Any:
+    """Trigger a clone/fetch for a team's GitHub repo."""
+    mapping = db.get_team_mapping(team_id)
+    if not mapping or not mapping["github_repo_url"]:
+        return JSONResponse({"ok": False, "error": "No GitHub repo URL configured"}, status_code=400)
+    if not settings.repos_dir:
+        return JSONResponse({"ok": False, "error": "REPOS_DIR not configured"}, status_code=400)
+
+    repos_dir = Path(settings.repos_dir)
+    ssh_env = _get_ssh_env()
+    db.update_clone_status(team_id, "cloning")
+
+    async def _do_clone():
+        try:
+            ok, msg, path = await asyncio.to_thread(clone_or_fetch, mapping["github_repo_url"], repos_dir, ssh_env)
+            if ok and path:
+                db.update_clone_status(team_id, "cloned", str(path))
+            else:
+                db.update_clone_status(team_id, f"error: {msg}")
+        except Exception as exc:
+            db.update_clone_status(team_id, f"error: {exc}")
+
+    asyncio.create_task(_do_clone())
+    return JSONResponse({"ok": True, "message": "Clone started"})
 
 
 @app.get("/api/workspace/check")
@@ -350,6 +451,10 @@ async def trigger_ticket(
     team_id: str = Form(""),
 ) -> Any:
     if issue_id and team_id and identifier:
+        try:
+            identifier = validate_identifier(identifier)
+        except ValueError:
+            return PlainTextResponse("Invalid identifier format", status_code=400)
         db.enqueue_job(issue_id, identifier, team_id, "manual_trigger")
         return RedirectResponse(url="/", status_code=303)
     return PlainTextResponse("Provide identifier, issue_id and team_id", status_code=400)
@@ -639,6 +744,12 @@ async def linear_webhook(request: Request) -> Any:
 
         if not (issue_id and identifier and team_id):
             return JSONResponse({"ok": True})
+
+        # Validate identifier format to prevent path traversal / injection
+        try:
+            identifier = validate_identifier(identifier)
+        except ValueError:
+            return JSONResponse({"ok": False, "error": "Invalid identifier"}, status_code=400)
 
         mapping = db.get_team_mapping(team_id)
         if not (mapping and mapping["enabled"]):
