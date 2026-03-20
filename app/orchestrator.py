@@ -1320,6 +1320,22 @@ After the pre-commit review is complete and all tests pass:
         if not claude_sid:
             return False, "Merge failed and no Claude session to resume"
 
+        # Mark session as "merging" so the dashboard shows progress
+        self.db.upsert_session(
+            run_id, session["issue_id"], identifier, "merging",
+            session["session_dir"], None, datetime.now(timezone.utc).isoformat(),
+        )
+
+        # Run Claude fix in background so the HTTP request returns immediately
+        asyncio.create_task(self._background_claude_merge(session, claude_sid))
+        return True, "Merge has conflicts — Claude is resolving them"
+
+    async def _background_claude_merge(self, session: dict, claude_sid: str) -> None:
+        """Background task: resume Claude to fix merge conflicts, then retry merge."""
+        identifier = session["identifier"]
+        run_id = session["run_id"]
+        pr_url = session["pr_url"]
+        issue_id = session["issue_id"]
         session_dir = Path(session["session_dir"])
         ssh_env = self._get_git_ssh_env()
 
@@ -1337,10 +1353,29 @@ After the pre-commit review is complete and all tests pass:
                 if mapping and mapping["local_path"]:
                     workdir = Path(mapping["local_path"]).resolve()
 
-        self.logger.info("[%s] Manual merge failed, resuming Claude to fix", identifier)
-        merge_ok = await self._claude_fix_and_merge(
-            identifier, claude_sid, pr_url, session_dir, workdir, ssh_env, run_id,
-        )
-        if merge_ok:
-            return True, "Merged after Claude resolved conflicts"
-        return False, "Merge failed — Claude could not resolve conflicts"
+        self.logger.info("[%s] Background: Claude fixing merge conflicts", identifier)
+        try:
+            merge_ok = await self._claude_fix_and_merge(
+                identifier, claude_sid, pr_url, session_dir, workdir, ssh_env, run_id,
+            )
+            now = datetime.now(timezone.utc).isoformat()
+            if merge_ok:
+                self.logger.info("[%s] Background merge-fix succeeded", identifier)
+                self.db.upsert_session(run_id, issue_id, identifier, "done", str(session_dir), None, now)
+            else:
+                self.logger.warning("[%s] Background merge-fix failed", identifier)
+                self.db.upsert_session(run_id, issue_id, identifier, "done", str(session_dir), None, now)
+                self.db._conn.execute(
+                    "UPDATE sessions SET last_error=? WHERE run_id=?",
+                    ("Merge failed — Claude could not resolve conflicts", run_id),
+                )
+                self.db._conn.commit()
+        except Exception as exc:
+            self.logger.error("[%s] Background merge-fix error: %s", identifier, exc)
+            now = datetime.now(timezone.utc).isoformat()
+            self.db.upsert_session(run_id, issue_id, identifier, "done", str(session_dir), None, now)
+            self.db._conn.execute(
+                "UPDATE sessions SET last_error=? WHERE run_id=?",
+                (f"Merge error: {exc}", run_id),
+            )
+            self.db._conn.commit()
