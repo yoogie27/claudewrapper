@@ -2,7 +2,7 @@
 name = "claudewrapper"
 version = "0.1.0"
 description = "Headless Linear + Claude Code orchestration"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 readme = "README.md"
 dependencies = [
   "fastapi>=0.110",

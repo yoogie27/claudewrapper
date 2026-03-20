@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # System dependencies: build tools, git, ssh, curl, node prerequisites
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,8 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js 20 LTS (required for Claude Code CLI)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+# Node.js 22 LTS (required for Claude Code CLI)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
