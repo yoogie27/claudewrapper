@@ -5,12 +5,12 @@ services:
     ports:
       - "8645:8645"
     volumes:
-      - data:/data
-      - ssh-keys:/data/ssh
-      - repos:/data/repos
+      - /opt/claudewrapper/data:/data
+      - /opt/claudewrapper/ssh-keys:/data/ssh
+      - /srv/claudewrapper/repos:/srv/repos
+      - /opt/claudewrapper/config/.claude:/root/.claude
     environment:
       - LINEAR_API_KEY
-      - ANTHROPIC_API_KEY
       - GITHUB_TOKEN
       - WEB_HOST=0.0.0.0
       - WEB_PORT=8645
@@ -20,7 +20,7 @@ services:
       - WORKTREE_ROOT=/data/worktrees
       - USE_GIT_WORKTREES=true
     env_file:
-      - .env
+      - .env.dockhand
     restart: unless-stopped
 
 volumes:
