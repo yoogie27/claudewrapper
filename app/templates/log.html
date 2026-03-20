@@ -30,13 +30,13 @@
     {% if status in ("failed", "done", "awaiting_feedback") %}
     <form method="post" action="/api/reprocess" style="display:inline">
       <input type="hidden" name="identifier" value="{{ identifier }}" />
-      <button type="submit" class="btn btn-sm btn-primary" title="Re-run only the post-processing step (post Linear comment, update ticket state, create PR) without re-running Claude. Useful when Claude succeeded but the follow-up steps failed.">Reprocess</button>
+      <button type="submit" class="btn btn-sm btn-secondary" title="Re-post results to Linear (comment + state update + PR creation) using the existing Claude output. Claude does NOT run again. Use this when Claude finished but the Linear update or PR creation failed.">Re-post</button>
     </form>
     {% endif %}
     {% if status == "done" and pr_url %}
     <form method="post" action="/api/merge" style="display:inline">
       <input type="hidden" name="run_id" value="{{ job_id }}" />
-      <button type="submit" class="btn btn-sm btn-primary" title="Squash-merge this pull request into the main branch via the GitHub API">Merge PR</button>
+      <button type="submit" class="btn btn-sm btn-primary" title="Squash-merge this pull request into the main branch via the GitHub API. Does not re-run Claude.">Merge PR</button>
     </form>
     <a href="{{ pr_url }}" target="_blank" class="btn btn-sm btn-secondary" title="Open the GitHub pull request in a new tab">View PR</a>
     {% endif %}

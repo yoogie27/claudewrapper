@@ -11,32 +11,16 @@
 <div class="card" id="queue-controls">
   <div class="card-header">
     <h2>Queue Controls</h2>
-    {% if queue_paused %}
-    <span class="badge badge-failed">PAUSED</span>
-    {% else %}
-    <span class="badge badge-done">ACTIVE</span>
-    {% endif %}
+    <span id="queue-status-badge"></span>
   </div>
   <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
     <button type="button" id="check-now-btn" class="btn btn-primary"
       title="Poll Linear for new/updated tickets right now, without waiting for the next scheduled poll interval">
       Check now
     </button>
-    {% if queue_paused %}
-    <button type="button" id="queue-resume-btn" class="btn btn-primary"
-      title="Resume processing pending jobs in the queue. Active jobs are not affected.">
-      Resume queue
-    </button>
-    {% else %}
-    <button type="button" id="queue-pause-btn" class="btn btn-danger"
-      title="Pause the queue so no new jobs are picked up. Currently running jobs will finish normally.">
-      Pause queue
-    </button>
-    {% endif %}
+    <span id="queue-toggle-wrap"></span>
     <span id="check-now-result" class="text-muted text-sm"></span>
-    {% if queue_paused and queue_paused_reason %}
-    <span class="text-muted text-sm" style="margin-left:8px;">Reason: {{ queue_paused_reason }}</span>
-    {% endif %}
+    <span id="queue-paused-reason" class="text-muted text-sm" style="margin-left:8px;"></span>
   </div>
 </div>
 
@@ -68,8 +52,8 @@
     </div>
     <div class="stat">
       <div class="stat-label">Active Jobs</div>
-      <div class="stat-value">{{ jobs | selectattr('status', 'in', ['pending', 'running']) | list | length }}</div>
-      <div class="stat-sub">{{ last_poll[:19] if last_poll else "never polled" }}</div>
+      <div class="stat-value" id="active-jobs-count">-</div>
+      <div class="stat-sub" id="last-poll-time">-</div>
     </div>
     <div class="stat">
       <div class="stat-label">Git</div>
@@ -82,130 +66,22 @@
 <div class="card">
   <div class="card-header">
     <h2>Sessions</h2>
-    <span class="count">{{ sessions | length }}</span>
+    <span class="count" id="sessions-count">0</span>
   </div>
-  {% if sessions %}
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Last Activity</th><th>Links</th><th>PR</th><th></th></tr></thead>
-      <tbody>
-        {% for s in sessions %}
-        {% set title = titles.get(s["identifier"], "") %}
-        <tr>
-          <td class="mono">{{ s["identifier"] }}</td>
-          <td class="text-sm" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ title }}">{{ title }}</td>
-          <td>
-            {% if s["status"] == "running" %}
-            <span class="badge badge-running">running</span>
-            {% elif s["status"] == "done" %}
-            <span class="badge badge-done">done</span>
-            {% elif s["status"] == "failed" %}
-            <span class="badge badge-failed">failed</span>
-            {% elif s["status"] == "awaiting_feedback" %}
-            <span class="badge badge-feedback">awaiting feedback</span>
-            {% elif s["status"] == "test" %}
-            <span class="badge badge-test">test</span>
-            {% else %}
-            <span class="badge">{{ s["status"] }}</span>
-            {% endif %}
-            {% if s["last_error"] %}
-            <span class="text-muted text-sm" title="{{ s['last_error'] }}">(error)</span>
-            {% endif %}
-          </td>
-          <td class="muted text-sm">{{ s["last_activity_at"][:19] if s["last_activity_at"] else "-" }}</td>
-          <td>
-            <a href="/sessions/{{ s['identifier'] }}/log" class="btn btn-sm btn-secondary" title="View the live Claude session log (stdout stream)">Log</a>
-            <a href="/sessions/{{ s['identifier'] }}/prompt" class="btn btn-sm btn-secondary" title="View the full prompt that was sent to Claude for this ticket">Prompt</a>
-          </td>
-          <td>
-            {% if s["pr_url"] %}
-            <a href="{{ s['pr_url'] }}" target="_blank" class="btn btn-sm btn-secondary" title="Open the GitHub pull request in a new tab">PR</a>
-            <form method="post" action="/api/merge" style="display:inline">
-              <input type="hidden" name="run_id" value="{{ s['run_id'] }}" />
-              <button type="submit" class="btn btn-sm btn-primary" title="Squash-merge this pull request into the main branch via the GitHub API">Merge</button>
-            </form>
-            {% endif %}
-          </td>
-          <td>
-            {% if s["status"] in ("failed", "done", "awaiting_feedback") %}
-            <form method="post" action="/api/reprocess" style="display:inline">
-              <input type="hidden" name="identifier" value="{{ s['identifier'] }}" />
-              <button type="submit" class="btn btn-sm btn-primary" title="Re-run only the post-processing step (post Linear comment, update ticket state, create PR) without re-running Claude. Useful when Claude succeeded but the follow-up steps failed.">Reprocess</button>
-            </form>
-            {% endif %}
-            <form method="post" action="/api/retry" style="display:inline">
-              <input type="hidden" name="identifier" value="{{ s['identifier'] }}" />
-              <button type="submit" class="btn btn-sm btn-secondary" title="Enqueue a completely new Claude run for this ticket. A fresh session will be started from scratch.">Retry</button>
-            </form>
-            {% if s["status"] != "running" %}
-            <form method="post" action="/api/cleanup" style="display:inline" data-confirm="Delete worktree and session data for {{ s['identifier'] }}?">
-              <input type="hidden" name="identifier" value="{{ s['identifier'] }}" />
-              <button type="submit" class="btn btn-sm btn-danger" title="Permanently delete the git worktree, session files (prompt, stdout, stderr), and database entry for this ticket. This cannot be undone.">Clean</button>
-            </form>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div id="sessions-body">
+    <div class="empty"><p>Loading...</p></div>
   </div>
-  {% else %}
-  <div class="empty"><p>No sessions yet</p></div>
-  {% endif %}
 </div>
 
 <!-- Job Queue -->
 <div class="card">
   <div class="card-header">
     <h2>Job Queue</h2>
-    <span class="count">{{ jobs | length }}</span>
+    <span class="count" id="jobs-count">0</span>
   </div>
-  {% if jobs %}
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Ticket</th><th>Title</th><th>Reason</th><th>Status</th><th>Created</th><th></th></tr></thead>
-      <tbody>
-        {% for j in jobs %}
-        {% set title = titles.get(j["identifier"], "") %}
-        <tr>
-          <td class="mono">{{ j["identifier"] }}</td>
-          <td class="text-sm" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ title }}">{{ title }}</td>
-          <td>{{ j["reason"] }}</td>
-          <td>
-            {% if j["status"] == "running" %}
-            <span class="badge badge-running">running</span>
-            {% elif j["status"] == "pending" %}
-            <span class="badge badge-pending">pending</span>
-            {% elif j["status"] == "done" %}
-            <span class="badge badge-done">done</span>
-            {% elif j["status"] == "failed" %}
-            <span class="badge badge-failed">failed</span>
-            {% else %}
-            <span class="badge">{{ j["status"] }}</span>
-            {% endif %}
-          </td>
-          <td class="muted text-sm">{{ j["created_at"][:19] }}</td>
-          <td>
-            {% if j["status"] == "running" %}
-            <form method="post" action="/api/cancel" style="display:inline">
-              <input type="hidden" name="job_id" value="{{ j['id'] }}" />
-              <button type="submit" class="btn btn-sm btn-danger" title="Terminate the Claude subprocess for this job. The job will be marked as failed.">Cancel</button>
-            </form>
-            {% elif j["status"] == "failed" %}
-            <form method="post" action="/api/retry-job" style="display:inline">
-              <input type="hidden" name="identifier" value="{{ j['identifier'] }}" />
-              <button type="submit" class="btn btn-sm btn-secondary" title="Re-enqueue this failed job for another attempt. A new Claude session will be started.">Retry</button>
-            </form>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div id="jobs-body">
+    <div class="empty"><p>Loading...</p></div>
   </div>
-  {% else %}
-  <div class="empty"><p>No jobs in queue</p></div>
-  {% endif %}
 </div>
 
 <!-- Manual Trigger -->
@@ -245,39 +121,32 @@
     <h2>Team Mappings</h2>
     <a href="/teams" class="btn btn-sm btn-secondary" title="Go to the team configuration page to manage repos, prompts, and auto-processing settings">Configure</a>
   </div>
-  {% if mappings %}
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Team</th><th>Path</th><th>Status</th></tr></thead>
-      <tbody>
-        {% for m in mappings %}
-        <tr>
-          <td>{{ m["team_name"] }}</td>
-          <td class="mono text-sm">{{ m["local_path"] }}</td>
-          <td>
-            {% if m["enabled"] %}
-            <span class="badge badge-enabled">Enabled</span>
-            {% else %}
-            <span class="badge badge-disabled">Disabled</span>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div id="mappings-body">
+    <div class="empty"><p>Loading...</p></div>
   </div>
-  {% else %}
-  <div class="empty"><p>No team mappings configured. <a href="/teams">Set up teams</a> to get started.</p></div>
-  {% endif %}
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  // Auto-refresh every 5s (only when tab is visible)
-  setInterval(() => { if (!document.hidden) location.reload(); }, 5000);
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
 
-  // Health polling — cache in sessionStorage to avoid flicker on reload
+  function badgeClass(status) {
+    const map = {running:'badge-running', done:'badge-done', failed:'badge-failed',
+      pending:'badge-pending', awaiting_feedback:'badge-feedback', test:'badge-test'};
+    return map[status] || '';
+  }
+
+  function badgeLabel(status) {
+    return status === 'awaiting_feedback' ? 'awaiting feedback' : status;
+  }
+
+  // ── Health polling (unchanged — already AJAX) ───────────────────────────
   function pctColor(pct) {
     if (pct > 90) return 'var(--error)';
     if (pct > 75) return 'var(--warning)';
@@ -302,7 +171,6 @@
     document.getElementById('health-updated').textContent = 'updated ' + new Date().toLocaleTimeString();
   }
 
-  // Restore cached health data immediately to prevent flicker
   try {
     const cached = sessionStorage.getItem('health');
     if (cached) applyHealth(JSON.parse(cached));
@@ -320,7 +188,172 @@
   pollHealth();
   setInterval(() => { if (!document.hidden) pollHealth(); }, 5000);
 
-  // Check now
+  // ── AJAX status refresh ─────────────────────────────────────────────────
+  function renderSessions(sessions, titles) {
+    const el = document.getElementById('sessions-body');
+    document.getElementById('sessions-count').textContent = sessions.length;
+    if (!sessions.length) {
+      el.innerHTML = '<div class="empty"><p>No sessions yet</p></div>';
+      return;
+    }
+    let html = '<div class="table-wrap"><table>';
+    html += '<thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Last Activity</th><th>PR</th><th></th></tr></thead><tbody>';
+    for (const s of sessions) {
+      const title = titles[s.identifier] || '';
+      const errSpan = s.last_error ? ` <span class="text-muted text-sm" title="${esc(s.last_error)}">(error)</span>` : '';
+      const activity = s.last_activity_at ? s.last_activity_at.slice(0,19) : '-';
+
+      let prCell = '';
+      if (s.pr_url) {
+        prCell = `<a href="${esc(s.pr_url)}" target="_blank" class="btn btn-sm btn-secondary" title="Open the GitHub pull request in a new tab">PR</a>`
+          + `<form method="post" action="/api/merge" style="display:inline">`
+          + `<input type="hidden" name="run_id" value="${s.run_id}" />`
+          + `<button type="submit" class="btn btn-sm btn-primary" title="Squash-merge this pull request into the main branch via the GitHub API. Does not re-run Claude.">Merge PR</button></form>`;
+      }
+
+      let actionsCell = '';
+      // Re-post: only re-runs post-processing (Linear comment, state change, PR creation) — Claude does NOT run again
+      if (['failed','done','awaiting_feedback'].includes(s.status)) {
+        actionsCell += `<form method="post" action="/api/reprocess" style="display:inline">`
+          + `<input type="hidden" name="identifier" value="${esc(s.identifier)}" />`
+          + `<button type="submit" class="btn btn-sm btn-secondary" title="Re-post results to Linear (comment + state update + PR creation) using the existing Claude output. Claude does NOT run again. Use this when Claude finished but the Linear update or PR creation failed.">Re-post</button></form>`;
+      }
+      // Re-run: starts a completely fresh Claude session from scratch
+      actionsCell += `<form method="post" action="/api/retry" style="display:inline">`
+        + `<input type="hidden" name="identifier" value="${esc(s.identifier)}" />`
+        + `<button type="submit" class="btn btn-sm btn-secondary" title="Start a completely new Claude session from scratch for this ticket. Use this when the previous result was wrong or incomplete.">Re-run</button></form>`;
+      if (s.status !== 'running') {
+        actionsCell += `<form method="post" action="/api/cleanup" style="display:inline" data-confirm="Delete worktree and session data for ${esc(s.identifier)}?">`
+          + `<input type="hidden" name="identifier" value="${esc(s.identifier)}" />`
+          + `<button type="submit" class="btn btn-sm btn-danger" title="Permanently delete the git worktree, session files, and database entry for this ticket. This cannot be undone.">Clean</button></form>`;
+      }
+
+      html += `<tr>`
+        + `<td class="mono"><a href="/sessions/${esc(s.identifier)}/log" title="View session log">${esc(s.identifier)}</a></td>`
+        + `<td class="text-sm" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(title)}">${esc(title)}</td>`
+        + `<td><span class="badge ${badgeClass(s.status)}">${badgeLabel(s.status)}</span>${errSpan}</td>`
+        + `<td class="muted text-sm">${activity}</td>`
+        + `<td>${prCell}</td>`
+        + `<td>${actionsCell}</td>`
+        + `</tr>`;
+    }
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+  }
+
+  function renderJobs(jobs, titles) {
+    const el = document.getElementById('jobs-body');
+    document.getElementById('jobs-count').textContent = jobs.length;
+    if (!jobs.length) {
+      el.innerHTML = '<div class="empty"><p>No jobs in queue</p></div>';
+      return;
+    }
+    let html = '<div class="table-wrap"><table>';
+    html += '<thead><tr><th>Ticket</th><th>Title</th><th>Reason</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>';
+    for (const j of jobs) {
+      const title = titles[j.identifier] || '';
+      let actionCell = '';
+      if (j.status === 'running') {
+        actionCell = `<form method="post" action="/api/cancel" style="display:inline">`
+          + `<input type="hidden" name="job_id" value="${j.id}" />`
+          + `<button type="submit" class="btn btn-sm btn-danger" title="Terminate the Claude subprocess for this job. The job will be marked as failed.">Cancel</button></form>`;
+      } else if (j.status === 'failed') {
+        actionCell = `<form method="post" action="/api/retry-job" style="display:inline">`
+          + `<input type="hidden" name="identifier" value="${esc(j.identifier)}" />`
+          + `<button type="submit" class="btn btn-sm btn-secondary" title="Re-enqueue this failed job for another attempt. A new Claude session will be started.">Retry</button></form>`;
+      }
+      html += `<tr>`
+        + `<td class="mono">${esc(j.identifier)}</td>`
+        + `<td class="text-sm" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(title)}">${esc(title)}</td>`
+        + `<td>${esc(j.reason)}</td>`
+        + `<td><span class="badge ${badgeClass(j.status)}">${badgeLabel(j.status)}</span></td>`
+        + `<td class="muted text-sm">${j.created_at ? j.created_at.slice(0,19) : ''}</td>`
+        + `<td>${actionCell}</td>`
+        + `</tr>`;
+    }
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+  }
+
+  function renderMappings(mappings) {
+    const el = document.getElementById('mappings-body');
+    if (!mappings.length) {
+      el.innerHTML = '<div class="empty"><p>No team mappings configured. <a href="/teams">Set up teams</a> to get started.</p></div>';
+      return;
+    }
+    let html = '<div class="table-wrap"><table>';
+    html += '<thead><tr><th>Team</th><th>Path</th><th>Status</th></tr></thead><tbody>';
+    for (const m of mappings) {
+      const badge = m.enabled
+        ? '<span class="badge badge-enabled">Enabled</span>'
+        : '<span class="badge badge-disabled">Disabled</span>';
+      html += `<tr><td>${esc(m.team_name)}</td><td class="mono text-sm">${esc(m.local_path)}</td><td>${badge}</td></tr>`;
+    }
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+  }
+
+  function renderQueueControls(paused, reason) {
+    const badgeEl = document.getElementById('queue-status-badge');
+    const wrapEl = document.getElementById('queue-toggle-wrap');
+    const reasonEl = document.getElementById('queue-paused-reason');
+
+    if (paused) {
+      badgeEl.innerHTML = '<span class="badge badge-failed">PAUSED</span>';
+      wrapEl.innerHTML = `<button type="button" id="queue-resume-btn" class="btn btn-primary"
+        title="Resume processing pending jobs in the queue. Active jobs are not affected.">Resume queue</button>`;
+      reasonEl.textContent = reason ? 'Reason: ' + reason : '';
+    } else {
+      badgeEl.innerHTML = '<span class="badge badge-done">ACTIVE</span>';
+      wrapEl.innerHTML = `<button type="button" id="queue-pause-btn" class="btn btn-danger"
+        title="Pause the queue so no new jobs are picked up. Currently running jobs will finish normally.">Pause queue</button>`;
+      reasonEl.textContent = '';
+    }
+
+    // Re-bind click handlers
+    const pauseBtn = document.getElementById('queue-pause-btn');
+    const resumeBtn = document.getElementById('queue-resume-btn');
+    if (pauseBtn) {
+      pauseBtn.addEventListener('click', async () => {
+        pauseBtn.disabled = true;
+        await fetch('/api/queue/pause', { method: 'POST' });
+        refreshStatus();
+      });
+    }
+    if (resumeBtn) {
+      resumeBtn.addEventListener('click', async () => {
+        resumeBtn.disabled = true;
+        await fetch('/api/queue/resume', { method: 'POST' });
+        refreshStatus();
+      });
+    }
+  }
+
+  async function refreshStatus() {
+    try {
+      const resp = await fetch('/api/status');
+      const data = await resp.json();
+
+      // Queue controls
+      renderQueueControls(data.queue_paused, data.queue_paused_reason);
+
+      // Active jobs count + last poll
+      const active = (data.jobs || []).filter(j => j.status === 'pending' || j.status === 'running').length;
+      document.getElementById('active-jobs-count').textContent = active;
+      document.getElementById('last-poll-time').textContent = data.last_poll ? data.last_poll.slice(0,19) : 'never polled';
+
+      // Tables
+      renderSessions(data.sessions || [], data.titles || {});
+      renderJobs(data.jobs || [], data.titles || {});
+      renderMappings(data.mappings || []);
+    } catch(e) {}
+  }
+
+  // Initial load + poll every 5s (no page reload)
+  refreshStatus();
+  setInterval(() => { if (!document.hidden) refreshStatus(); }, 5000);
+
+  // ── Check now ───────────────────────────────────────────────────────────
   document.getElementById('check-now-btn').addEventListener('click', async () => {
     const btn = document.getElementById('check-now-btn');
     const resEl = document.getElementById('check-now-result');
@@ -332,7 +365,7 @@
       const data = await resp.json();
       if (data.ok) {
         resEl.textContent = data.found ? 'New tickets found and enqueued.' : 'No new tickets found.';
-        if (data.found) setTimeout(() => location.reload(), 1000);
+        if (data.found) refreshStatus();
       } else {
         resEl.textContent = 'Error: ' + (data.error || 'unknown');
       }
@@ -343,27 +376,7 @@
     btn.textContent = 'Check now';
   });
 
-  // Queue pause/resume
-  const pauseBtn = document.getElementById('queue-pause-btn');
-  const resumeBtn = document.getElementById('queue-resume-btn');
-
-  if (pauseBtn) {
-    pauseBtn.addEventListener('click', async () => {
-      pauseBtn.disabled = true;
-      await fetch('/api/queue/pause', { method: 'POST' });
-      location.reload();
-    });
-  }
-
-  if (resumeBtn) {
-    resumeBtn.addEventListener('click', async () => {
-      resumeBtn.disabled = true;
-      await fetch('/api/queue/resume', { method: 'POST' });
-      location.reload();
-    });
-  }
-
-  // Lookup
+  // ── Lookup ──────────────────────────────────────────────────────────────
   document.getElementById('lookup-btn').addEventListener('click', async () => {
     const ident = document.getElementById('mt-identifier').value.trim();
     const resEl = document.getElementById('lookup-result');

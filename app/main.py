@@ -238,13 +238,26 @@ async def file_browser(request: Request, path: str | None = None) -> Any:
 
 @app.get("/api/status")
 async def status() -> Any:
+    jobs = [dict(r) for r in db.list_jobs(50)]
+    sessions = [dict(r) for r in db.list_sessions(50)]
+    mappings = [dict(r) for r in db.list_team_mappings()]
+    # Build identifier -> title lookup
+    identifiers = {s["identifier"] for s in sessions} | {j["identifier"] for j in jobs}
+    titles = {}
+    for ident in identifiers:
+        row = db.get_issue_by_identifier(ident)
+        if row and row["last_title"]:
+            titles[ident] = row["last_title"]
     return JSONResponse(
         {
-            "jobs": [dict(r) for r in db.list_jobs(20)],
-            "sessions": [dict(r) for r in db.list_sessions(20)],
-            "mappings": [dict(r) for r in db.list_team_mappings()],
+            "jobs": jobs,
+            "sessions": sessions,
+            "mappings": mappings,
+            "titles": titles,
             "last_poll": db.get_config("last_poll"),
             "test_mode": settings.test_mode,
+            "queue_paused": orchestrator.is_queue_paused(),
+            "queue_paused_reason": db.get_config("queue_paused_reason") or "",
             "status_mapping": {
                 "hitl": db.get_config("status_hitl") or settings.hitl_state_name,
                 "review": db.get_config("status_review") or settings.review_state_name,
