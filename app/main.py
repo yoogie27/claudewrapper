@@ -306,10 +306,9 @@ async def api_repo_clone(team_id: str = Form(...)) -> Any:
     mapping = db.get_team_mapping(team_id)
     if not mapping or not mapping["github_repo_url"]:
         return JSONResponse({"ok": False, "error": "No GitHub repo URL configured"}, status_code=400)
-    if not settings.repos_dir:
-        return JSONResponse({"ok": False, "error": "REPOS_DIR not configured"}, status_code=400)
 
-    repos_dir = Path(settings.repos_dir)
+    # Use configured REPOS_DIR if set, else fall back to DATA_DIR/repos
+    repos_dir = Path(settings.repos_dir) if settings.repos_dir else settings.data_path() / "repos"
     ssh_env = _get_ssh_env()
     db.update_clone_status(team_id, "cloning")
 
