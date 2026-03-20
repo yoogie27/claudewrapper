@@ -206,9 +206,7 @@
       let prCell = '';
       if (s.pr_url) {
         prCell = `<a href="${esc(s.pr_url)}" target="_blank" class="btn btn-sm btn-secondary" title="Open the GitHub pull request in a new tab">PR</a>`
-          + `<form method="post" action="/api/merge" style="display:inline">`
-          + `<input type="hidden" name="run_id" value="${s.run_id}" />`
-          + `<button type="submit" class="btn btn-sm btn-primary" title="Squash-merge this pull request into the main branch via the GitHub API. Does not re-run Claude.">Merge PR</button></form>`;
+          + `<button type="button" class="btn btn-sm btn-primary merge-btn" data-run-id="${s.run_id}" title="Squash-merge this PR into main. If there are merge conflicts, Claude will be resumed to fix them automatically.">Merge PR</button>`;
       }
 
       let actionsCell = '';
@@ -352,6 +350,35 @@
   // Initial load + poll every 5s (no page reload)
   refreshStatus();
   setInterval(() => { if (!document.hidden) refreshStatus(); }, 5000);
+
+  // ── Merge PR (via fetch, with Claude fallback feedback) ─────────────────
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.merge-btn');
+    if (!btn) return;
+    const runId = btn.dataset.runId;
+    btn.disabled = true;
+    btn.textContent = 'Merging...';
+    try {
+      const form = new FormData();
+      form.append('run_id', runId);
+      const resp = await fetch('/api/merge', { method: 'POST', body: form, headers: { 'Accept': 'application/json' } });
+      const data = await resp.json();
+      if (data.ok) {
+        btn.textContent = data.message;
+        btn.classList.remove('btn-primary');
+        btn.classList.add('btn-secondary');
+        refreshStatus();
+      } else {
+        btn.textContent = data.message || 'Merge failed';
+        btn.classList.remove('btn-primary');
+        btn.classList.add('btn-danger');
+        setTimeout(() => { btn.textContent = 'Merge PR'; btn.disabled = false; btn.classList.remove('btn-danger'); btn.classList.add('btn-primary'); }, 5000);
+      }
+    } catch(ex) {
+      btn.textContent = 'Request failed';
+      btn.disabled = false;
+    }
+  });
 
   // ── Check now ───────────────────────────────────────────────────────────
   document.getElementById('check-now-btn').addEventListener('click', async () => {

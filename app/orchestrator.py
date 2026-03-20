@@ -1260,11 +1260,47 @@ After the pre-commit review is complete and all tests pass:
         return False
 
     async def merge_session_pr(self, run_id: int) -> tuple[bool, str]:
-        """Merge the PR for a session. Returns (ok, message)."""
+        """Merge the PR for a session.  Falls back to resuming Claude to fix
+        merge conflicts when the direct merge fails.  Returns (ok, message)."""
         session = self.db.get_session_by_run_id(run_id)
         if not session or not session["pr_url"]:
             return False, "No PR URL found for this session"
-        ok = await self._merge_github_pr(session["pr_url"])
+
+        pr_url = session["pr_url"]
+        ok = await self._merge_github_pr(pr_url)
         if ok:
             return True, "Merged successfully"
-        return False, "Merge failed — check logs or merge manually"
+
+        # Direct merge failed — try Claude fallback
+        if self.settings.test_mode:
+            return False, "Merge failed (test mode, Claude fallback skipped)"
+
+        identifier = session["identifier"]
+        claude_sid = self.db.get_last_claude_session_id(identifier)
+        if not claude_sid:
+            return False, "Merge failed and no Claude session to resume"
+
+        session_dir = Path(session["session_dir"])
+        ssh_env = self._get_git_ssh_env()
+
+        # Determine workdir from worktree meta or team mapping
+        workdir = None
+        meta = read_worktree_meta(session_dir)
+        if meta and meta.get("worktree"):
+            wt = Path(meta["worktree"])
+            if wt.exists():
+                workdir = wt
+        if not workdir:
+            issue_state = self.db.get_issue_by_identifier(identifier)
+            if issue_state:
+                mapping = self.db.get_team_mapping(issue_state["team_id"])
+                if mapping and mapping["local_path"]:
+                    workdir = Path(mapping["local_path"]).resolve()
+
+        self.logger.info("[%s] Manual merge failed, resuming Claude to fix", identifier)
+        merge_ok = await self._claude_fix_and_merge(
+            identifier, claude_sid, pr_url, session_dir, workdir, ssh_env, run_id,
+        )
+        if merge_ok:
+            return True, "Merged after Claude resolved conflicts"
+        return False, "Merge failed — Claude could not resolve conflicts"

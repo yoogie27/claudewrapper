@@ -441,8 +441,16 @@ async def cancel_job(request: Request, job_id: int = Form(...)) -> Any:
 @app.post("/api/merge")
 async def merge_pr(request: Request, run_id: int = Form(...)) -> Any:
     ok, msg = await orchestrator.merge_session_pr(run_id)
+    # If the request came from a form (not fetch), redirect back
+    accept = request.headers.get("accept", "")
+    if "application/json" in accept:
+        status_code = 200 if ok else 400
+        return JSONResponse({"ok": ok, "message": msg}, status_code=status_code)
     if not ok:
-        return PlainTextResponse(msg, status_code=400)
+        # Redirect back with error as query param so the UI can show a toast
+        referer = request.headers.get("referer", "/")
+        sep = "&" if "?" in referer else "?"
+        return RedirectResponse(url=f"{referer}{sep}error={msg}", status_code=303)
     referer = request.headers.get("referer", "/")
     return RedirectResponse(url=referer, status_code=303)
 
