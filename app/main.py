@@ -851,6 +851,18 @@ async def linear_webhook(request: Request) -> Any:
 
 def run() -> None:
     import uvicorn
+    import logging
+
+    # Custom access log filter to suppress noisy health check endpoints
+    class HealthCheckFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            # Only log if it's NOT a health check endpoint
+            msg = record.getMessage()
+            return "/api/status" not in msg and "/api/health" not in msg
+
+    uvicorn_logger = logging.getLogger("uvicorn.access")
+    uvicorn_logger.addFilter(HealthCheckFilter())
+
     uvicorn.run(app, host=settings.web_host, port=settings.web_port)
 
 
