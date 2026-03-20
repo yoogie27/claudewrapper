@@ -487,6 +487,11 @@ async def reprocess_session(request: Request, identifier: str = Form(...)) -> An
 async def cleanup_session(request: Request, identifier: str = Form(...)) -> Any:
     """Remove worktree, session files, and DB row for a ticket."""
     ok, msg = orchestrator.cleanup_session(identifier)
+    # Check if the request came from a form (not fetch)
+    accept = request.headers.get("accept", "")
+    if "application/json" in accept:
+        status_code = 200 if ok else 400
+        return JSONResponse({"ok": ok, "message": msg}, status_code=status_code)
     if not ok:
         return PlainTextResponse(msg, status_code=400)
     referer = request.headers.get("referer", "/")

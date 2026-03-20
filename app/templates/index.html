@@ -232,9 +232,7 @@
         actionsCell += `<form method="post" action="/api/retry" style="display:inline">`
           + `<input type="hidden" name="identifier" value="${esc(s.identifier)}" />`
           + `<button type="submit" class="${rerunClass}" title="Start a completely new Claude session from scratch for this ticket. Use this when the previous result was wrong or incomplete.">Re-run</button></form>`;
-        actionsCell += `<form method="post" action="/api/cleanup" style="display:inline" data-confirm="Delete worktree and session data for ${esc(s.identifier)}?">`
-          + `<input type="hidden" name="identifier" value="${esc(s.identifier)}" />`
-          + `<button type="submit" class="btn btn-sm btn-danger" title="Permanently delete the git worktree, session files, and database entry for this ticket. This cannot be undone.">Clean</button></form>`;
+        actionsCell += `<button type="button" class="btn btn-sm btn-danger cleanup-btn" data-identifier="${esc(s.identifier)}" title="Permanently delete the git worktree, session files, and database entry for this ticket. This cannot be undone.">Clean</button>`;
       }
 
       html += `<tr>`
@@ -385,6 +383,60 @@
         btn.classList.remove('btn-primary');
         btn.classList.add('btn-danger');
         setTimeout(() => { btn.textContent = 'Merge PR'; btn.disabled = false; btn.classList.remove('btn-danger'); btn.classList.add('btn-primary'); }, 5000);
+      }
+    } catch(ex) {
+      btn.textContent = 'Request failed';
+      btn.disabled = false;
+    }
+  });
+
+  // ── Cleanup (inline confirmation, fetch with status feedback) ──────────────
+  // Track which cleanup buttons are in "confirming" state
+  const cleanupConfirming = new Set();
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.cleanup-btn');
+    if (!btn) return;
+    const identifier = btn.dataset.identifier;
+    const isConfirming = cleanupConfirming.has(identifier);
+
+    if (!isConfirming) {
+      // First click: enter confirmation state
+      cleanupConfirming.add(identifier);
+      btn.textContent = 'Confirm?';
+      btn.classList.remove('btn-danger');
+      btn.classList.add('btn-secondary');
+      // Auto-reset after 3 seconds if user doesn't confirm
+      setTimeout(() => {
+        if (cleanupConfirming.has(identifier)) {
+          cleanupConfirming.delete(identifier);
+          btn.textContent = 'Clean';
+          btn.classList.remove('btn-secondary');
+          btn.classList.add('btn-danger');
+        }
+      }, 3000);
+      return;
+    }
+
+    // Second click: execute cleanup
+    cleanupConfirming.delete(identifier);
+    btn.disabled = true;
+    btn.textContent = 'Cleaning...';
+    try {
+      const form = new FormData();
+      form.append('identifier', identifier);
+      const resp = await fetch('/api/cleanup', { method: 'POST', body: form, headers: { 'Accept': 'application/json' } });
+      const data = await resp.json();
+      if (data.ok) {
+        btn.textContent = 'Cleaned';
+        btn.classList.remove('btn-danger');
+        btn.classList.add('btn-secondary');
+        btn.disabled = true;
+        setTimeout(() => refreshStatus(), 1000);
+      } else {
+        btn.textContent = data.message || 'Cleanup failed';
+        btn.classList.remove('btn-danger');
+        btn.classList.add('btn-danger');
+        setTimeout(() => { btn.textContent = 'Clean'; btn.disabled = false; }, 5000);
       }
     } catch(ex) {
       btn.textContent = 'Request failed';
