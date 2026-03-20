@@ -143,6 +143,9 @@ class Database:
                 if "pr_url" not in cols:
                     self._conn.execute("ALTER TABLE sessions ADD COLUMN pr_url TEXT")
                     self._conn.commit()
+                if "pr_merged" not in cols:
+                    self._conn.execute("ALTER TABLE sessions ADD COLUMN pr_merged INTEGER NOT NULL DEFAULT 0")
+                    self._conn.commit()
 
         # team_mappings migrations
         if "team_mappings" in tables:
@@ -414,6 +417,17 @@ class Database:
     def set_session_pr_url(self, run_id: int, pr_url: str) -> None:
         self._conn.execute("UPDATE sessions SET pr_url=? WHERE run_id=?", (pr_url, run_id))
         self._conn.commit()
+
+    def set_pr_merged(self, pr_url: str) -> None:
+        """Mark a PR as merged (by URL, so it works regardless of how the merge happened)."""
+        self._conn.execute("UPDATE sessions SET pr_merged=1 WHERE pr_url=?", (pr_url,))
+        self._conn.commit()
+
+    def get_open_pr_sessions(self) -> list[sqlite3.Row]:
+        """Get sessions that have a PR URL but are not yet marked as merged."""
+        return self._conn.execute(
+            "SELECT * FROM sessions WHERE pr_url IS NOT NULL AND pr_url != '' AND pr_merged = 0"
+        ).fetchall()
 
     def get_session_by_run_id(self, run_id: int) -> sqlite3.Row | None:
         return self._conn.execute("SELECT * FROM sessions WHERE run_id=?", (run_id,)).fetchone()

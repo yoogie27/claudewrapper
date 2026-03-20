@@ -204,22 +204,29 @@
       const activity = s.last_activity_at ? s.last_activity_at.slice(0,19) : '-';
 
       let prCell = '';
-      if (s.pr_url) {
+      if (s.pr_url && s.pr_merged) {
+        prCell = `<a href="${esc(s.pr_url)}" target="_blank" class="btn btn-sm btn-secondary" title="Open the merged pull request on GitHub">PR</a>`
+          + ` <span class="badge badge-done">merged</span>`;
+      } else if (s.pr_url) {
         prCell = `<a href="${esc(s.pr_url)}" target="_blank" class="btn btn-sm btn-secondary" title="Open the GitHub pull request in a new tab">PR</a>`
-          + `<button type="button" class="btn btn-sm btn-primary merge-btn" data-run-id="${s.run_id}" title="Squash-merge this PR into main. If there are merge conflicts, Claude will be resumed to fix them automatically.">Merge PR</button>`;
+          + ` <button type="button" class="btn btn-sm btn-primary merge-btn" data-run-id="${s.run_id}" title="Squash-merge this PR into main. If there are merge conflicts, Claude will be resumed to fix them automatically.">Merge PR</button>`;
       }
 
       let actionsCell = '';
+      const isFailed = s.status === 'failed';
       // Re-post: only re-runs post-processing (Linear comment, state change, PR creation) — Claude does NOT run again
       if (['failed','done','awaiting_feedback'].includes(s.status)) {
         actionsCell += `<form method="post" action="/api/reprocess" style="display:inline">`
           + `<input type="hidden" name="identifier" value="${esc(s.identifier)}" />`
           + `<button type="submit" class="btn btn-sm btn-secondary" title="Re-post results to Linear (comment + state update + PR creation) using the existing Claude output. Claude does NOT run again. Use this when Claude finished but the Linear update or PR creation failed.">Re-post</button></form>`;
       }
-      // Re-run: starts a completely fresh Claude session from scratch
-      actionsCell += `<form method="post" action="/api/retry" style="display:inline">`
-        + `<input type="hidden" name="identifier" value="${esc(s.identifier)}" />`
-        + `<button type="submit" class="btn btn-sm btn-secondary" title="Start a completely new Claude session from scratch for this ticket. Use this when the previous result was wrong or incomplete.">Re-run</button></form>`;
+      // Re-run: starts a completely fresh Claude session from scratch — highlighted when failed
+      if (s.status !== 'running') {
+        const rerunClass = isFailed ? 'btn btn-sm btn-primary' : 'btn btn-sm btn-secondary';
+        actionsCell += `<form method="post" action="/api/retry" style="display:inline">`
+          + `<input type="hidden" name="identifier" value="${esc(s.identifier)}" />`
+          + `<button type="submit" class="${rerunClass}" title="Start a completely new Claude session from scratch for this ticket. Use this when the previous result was wrong or incomplete.">Re-run</button></form>`;
+      }
       if (s.status !== 'running') {
         actionsCell += `<form method="post" action="/api/cleanup" style="display:inline" data-confirm="Delete worktree and session data for ${esc(s.identifier)}?">`
           + `<input type="hidden" name="identifier" value="${esc(s.identifier)}" />`

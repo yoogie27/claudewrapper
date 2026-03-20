@@ -82,6 +82,7 @@ class Orchestrator:
             asyncio.create_task(self._worker_loop(f"worker-{i+1}"))
         asyncio.create_task(self._cleanup_loop())
         asyncio.create_task(self._reaper_loop())
+        asyncio.create_task(self._pr_status_loop())
 
     def _get_git_ssh_env(self) -> dict[str, str] | None:
         """Build GIT_SSH_COMMAND env dict if SSH keys are configured."""
@@ -1023,6 +1024,44 @@ After the pre-commit review is complete and all tests pass:
             # Periodically checkpoint WAL to prevent unbounded growth
             self.db.wal_checkpoint()
 
+    async def _pr_status_loop(self) -> None:
+        """Periodically check GitHub for PR merge status so the dashboard stays accurate."""
+        while not self.stop_event.is_set():
+            await asyncio.sleep(60)
+            if not self.settings.github_token:
+                continue
+            try:
+                open_sessions = self.db.get_open_pr_sessions()
+                if not open_sessions:
+                    continue
+                import re
+                headers = {
+                    "Authorization": f"Bearer {self.settings.github_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                }
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    for sess in open_sessions:
+                        pr_url = sess["pr_url"]
+                        m = re.match(r'https://github\.com/([^/]+)/([^/]+)/pull/(\d+)', pr_url)
+                        if not m:
+                            continue
+                        owner, repo, pr_number = m.group(1), m.group(2), m.group(3)
+                        try:
+                            resp = await client.get(
+                                f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                                headers=headers,
+                            )
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                if data.get("merged"):
+                                    self.db.set_pr_merged(pr_url)
+                                    self.logger.info("PR status sync: %s is merged", pr_url)
+                        except Exception:
+                            pass  # individual check failure is fine
+            except Exception as exc:
+                self.logger.error("PR status loop error: %s", exc)
+
     async def _cleanup_loop(self) -> None:
         while not self.stop_event.is_set():
             await asyncio.sleep(3600)
@@ -1247,6 +1286,7 @@ After the pre-commit review is complete and all tests pass:
                         json={"merge_method": "squash"},
                     )
                     if resp.status_code == 200:
+                        self.db.set_pr_merged(pr_url)
                         return True
                     if resp.status_code == 405 and attempt < len(merge_delays):
                         self.logger.info("PR merge returned 405, retrying in %ds (%d/%d)",
