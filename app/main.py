@@ -131,9 +131,10 @@ async def set_mapping(
 ) -> Any:
     github_repo_url = github_repo_url.strip()
 
-    # If a GitHub URL is provided and repos_dir is configured, trigger auto-clone
-    if github_repo_url and settings.repos_dir:
-        repos_dir = Path(settings.repos_dir)
+    # If a GitHub URL is provided and local_path is empty, or repos_dir is configured, trigger auto-clone
+    if github_repo_url and (not local_path or settings.repos_dir):
+        # Use configured REPOS_DIR if set, else fall back to DATA_DIR/repos
+        repos_dir = Path(settings.repos_dir) if settings.repos_dir else settings.data_path() / "repos"
         ssh_env = _get_ssh_env()
         db.upsert_team_mapping(
             team_id, team_name, local_path, default_prompt,
