@@ -7,6 +7,39 @@
   <p>Overview of jobs, sessions, and system status</p>
 </div>
 
+<!-- Queue Controls -->
+<div class="card" id="queue-controls">
+  <div class="card-header">
+    <h2>Queue Controls</h2>
+    {% if queue_paused %}
+    <span class="badge badge-failed">PAUSED</span>
+    {% else %}
+    <span class="badge badge-done">ACTIVE</span>
+    {% endif %}
+  </div>
+  <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+    <button type="button" id="check-now-btn" class="btn btn-primary"
+      title="Poll Linear for new/updated tickets right now, without waiting for the next scheduled poll interval">
+      Check now
+    </button>
+    {% if queue_paused %}
+    <button type="button" id="queue-resume-btn" class="btn btn-primary"
+      title="Resume processing pending jobs in the queue. Active jobs are not affected.">
+      Resume queue
+    </button>
+    {% else %}
+    <button type="button" id="queue-pause-btn" class="btn btn-danger"
+      title="Pause the queue so no new jobs are picked up. Currently running jobs will finish normally.">
+      Pause queue
+    </button>
+    {% endif %}
+    <span id="check-now-result" class="text-muted text-sm"></span>
+    {% if queue_paused and queue_paused_reason %}
+    <span class="text-muted text-sm" style="margin-left:8px;">Reason: {{ queue_paused_reason }}</span>
+    {% endif %}
+  </div>
+</div>
+
 <!-- System Health (live) -->
 <div class="card" id="health-card">
   <div class="card-header">
@@ -45,38 +78,6 @@
   </div>
 </div>
 
-<!-- Team mappings -->
-<div class="card">
-  <div class="card-header">
-    <h2>Team Mappings</h2>
-    <a href="/teams" class="btn btn-sm btn-secondary">Configure</a>
-  </div>
-  {% if mappings %}
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Team</th><th>Path</th><th>Status</th></tr></thead>
-      <tbody>
-        {% for m in mappings %}
-        <tr>
-          <td>{{ m["team_name"] }}</td>
-          <td class="mono text-sm">{{ m["local_path"] }}</td>
-          <td>
-            {% if m["enabled"] %}
-            <span class="badge badge-enabled">Enabled</span>
-            {% else %}
-            <span class="badge badge-disabled">Disabled</span>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-  <div class="empty"><p>No team mappings configured. <a href="/teams">Set up teams</a> to get started.</p></div>
-  {% endif %}
-</div>
-
 <!-- Sessions -->
 <div class="card">
   <div class="card-header">
@@ -113,33 +114,33 @@
           </td>
           <td class="muted text-sm">{{ s["last_activity_at"][:19] if s["last_activity_at"] else "-" }}</td>
           <td>
-            <a href="/sessions/{{ s['identifier'] }}/log" class="btn btn-sm btn-secondary">Log</a>
-            <a href="/sessions/{{ s['identifier'] }}/prompt" class="btn btn-sm btn-secondary">Prompt</a>
+            <a href="/sessions/{{ s['identifier'] }}/log" class="btn btn-sm btn-secondary" title="View the live Claude session log (stdout stream)">Log</a>
+            <a href="/sessions/{{ s['identifier'] }}/prompt" class="btn btn-sm btn-secondary" title="View the full prompt that was sent to Claude for this ticket">Prompt</a>
           </td>
           <td>
             {% if s["pr_url"] %}
-            <a href="{{ s['pr_url'] }}" target="_blank" class="btn btn-sm btn-secondary">PR</a>
+            <a href="{{ s['pr_url'] }}" target="_blank" class="btn btn-sm btn-secondary" title="Open the GitHub pull request in a new tab">PR</a>
             <form method="post" action="/api/merge" style="display:inline">
               <input type="hidden" name="run_id" value="{{ s['run_id'] }}" />
-              <button type="submit" class="btn btn-sm btn-primary">Merge</button>
+              <button type="submit" class="btn btn-sm btn-primary" title="Squash-merge this pull request into the main branch via the GitHub API">Merge</button>
             </form>
             {% endif %}
           </td>
           <td>
             {% if s["status"] in ("failed", "done", "awaiting_feedback") %}
-            <form method="post" action="/api/reprocess" style="display:inline" title="Re-run post-processing (comment, state, PR) without re-running Claude">
+            <form method="post" action="/api/reprocess" style="display:inline">
               <input type="hidden" name="identifier" value="{{ s['identifier'] }}" />
-              <button type="submit" class="btn btn-sm btn-primary">Reprocess</button>
+              <button type="submit" class="btn btn-sm btn-primary" title="Re-run only the post-processing step (post Linear comment, update ticket state, create PR) without re-running Claude. Useful when Claude succeeded but the follow-up steps failed.">Reprocess</button>
             </form>
             {% endif %}
             <form method="post" action="/api/retry" style="display:inline">
               <input type="hidden" name="identifier" value="{{ s['identifier'] }}" />
-              <button type="submit" class="btn btn-sm btn-secondary">Retry</button>
+              <button type="submit" class="btn btn-sm btn-secondary" title="Enqueue a completely new Claude run for this ticket. A fresh session will be started from scratch.">Retry</button>
             </form>
             {% if s["status"] != "running" %}
-            <form method="post" action="/api/cleanup" style="display:inline" title="Remove worktree, session files, and DB entry" data-confirm="Delete worktree and session data for {{ s['identifier'] }}?">
+            <form method="post" action="/api/cleanup" style="display:inline" data-confirm="Delete worktree and session data for {{ s['identifier'] }}?">
               <input type="hidden" name="identifier" value="{{ s['identifier'] }}" />
-              <button type="submit" class="btn btn-sm btn-danger">Clean</button>
+              <button type="submit" class="btn btn-sm btn-danger" title="Permanently delete the git worktree, session files (prompt, stdout, stderr), and database entry for this ticket. This cannot be undone.">Clean</button>
             </form>
             {% endif %}
           </td>
@@ -188,12 +189,12 @@
             {% if j["status"] == "running" %}
             <form method="post" action="/api/cancel" style="display:inline">
               <input type="hidden" name="job_id" value="{{ j['id'] }}" />
-              <button type="submit" class="btn btn-sm btn-danger">Cancel</button>
+              <button type="submit" class="btn btn-sm btn-danger" title="Terminate the Claude subprocess for this job. The job will be marked as failed.">Cancel</button>
             </form>
             {% elif j["status"] == "failed" %}
             <form method="post" action="/api/retry-job" style="display:inline">
               <input type="hidden" name="identifier" value="{{ j['identifier'] }}" />
-              <button type="submit" class="btn btn-sm btn-secondary">Retry</button>
+              <button type="submit" class="btn btn-sm btn-secondary" title="Re-enqueue this failed job for another attempt. A new Claude session will be started.">Retry</button>
             </form>
             {% endif %}
           </td>
@@ -229,13 +230,45 @@
       </div>
       <div class="form-group" style="flex:0; padding-top:20px">
         <div class="btn-group">
-          <button type="button" id="lookup-btn" class="btn btn-secondary">Lookup</button>
-          <button type="submit" class="btn btn-primary">Trigger</button>
+          <button type="button" id="lookup-btn" class="btn btn-secondary" title="Look up the ticket identifier in Linear to auto-fill the Issue ID and Team ID fields">Lookup</button>
+          <button type="submit" class="btn btn-primary" title="Enqueue a Claude run for this ticket immediately, bypassing the normal polling schedule">Trigger</button>
         </div>
       </div>
     </div>
   </form>
   <div id="lookup-result" class="text-muted text-sm mt-8"></div>
+</div>
+
+<!-- Team mappings -->
+<div class="card">
+  <div class="card-header">
+    <h2>Team Mappings</h2>
+    <a href="/teams" class="btn btn-sm btn-secondary" title="Go to the team configuration page to manage repos, prompts, and auto-processing settings">Configure</a>
+  </div>
+  {% if mappings %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Team</th><th>Path</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for m in mappings %}
+        <tr>
+          <td>{{ m["team_name"] }}</td>
+          <td class="mono text-sm">{{ m["local_path"] }}</td>
+          <td>
+            {% if m["enabled"] %}
+            <span class="badge badge-enabled">Enabled</span>
+            {% else %}
+            <span class="badge badge-disabled">Disabled</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty"><p>No team mappings configured. <a href="/teams">Set up teams</a> to get started.</p></div>
+  {% endif %}
 </div>
 {% endblock %}
 
@@ -286,6 +319,49 @@
 
   pollHealth();
   setInterval(() => { if (!document.hidden) pollHealth(); }, 5000);
+
+  // Check now
+  document.getElementById('check-now-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('check-now-btn');
+    const resEl = document.getElementById('check-now-result');
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    resEl.textContent = '';
+    try {
+      const resp = await fetch('/api/poll-now', { method: 'POST' });
+      const data = await resp.json();
+      if (data.ok) {
+        resEl.textContent = data.found ? 'New tickets found and enqueued.' : 'No new tickets found.';
+        if (data.found) setTimeout(() => location.reload(), 1000);
+      } else {
+        resEl.textContent = 'Error: ' + (data.error || 'unknown');
+      }
+    } catch(e) {
+      resEl.textContent = 'Request failed.';
+    }
+    btn.disabled = false;
+    btn.textContent = 'Check now';
+  });
+
+  // Queue pause/resume
+  const pauseBtn = document.getElementById('queue-pause-btn');
+  const resumeBtn = document.getElementById('queue-resume-btn');
+
+  if (pauseBtn) {
+    pauseBtn.addEventListener('click', async () => {
+      pauseBtn.disabled = true;
+      await fetch('/api/queue/pause', { method: 'POST' });
+      location.reload();
+    });
+  }
+
+  if (resumeBtn) {
+    resumeBtn.addEventListener('click', async () => {
+      resumeBtn.disabled = true;
+      await fetch('/api/queue/resume', { method: 'POST' });
+      location.reload();
+    });
+  }
 
   // Lookup
   document.getElementById('lookup-btn').addEventListener('click', async () => {

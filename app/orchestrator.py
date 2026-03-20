@@ -317,8 +317,31 @@ class Orchestrator:
         self.db.set_config("last_poll", now_iso)
         return enqueued
 
+    def is_queue_paused(self) -> bool:
+        return self.db.get_config("queue_paused") == "1"
+
+    def set_queue_paused(self, paused: bool, reason: str = "") -> None:
+        if paused:
+            self.db.set_config("queue_paused", "1")
+            if reason:
+                self.db.set_config("queue_paused_reason", reason)
+            self.logger.warning("Queue PAUSED%s", f": {reason}" if reason else "")
+        else:
+            self.db.delete_config("queue_paused")
+            self.db.delete_config("queue_paused_reason")
+            self.logger.info("Queue RESUMED")
+
+    async def poll_now(self) -> bool:
+        """Trigger an immediate poll. Returns True if any job was enqueued."""
+        return await self._poll_once()
+
     async def _worker_loop(self, worker_id: str) -> None:
         while not self.stop_event.is_set():
+            # Check global queue pause
+            if self.is_queue_paused():
+                await asyncio.sleep(3)
+                continue
+
             job = self.db.dequeue_job(worker_id, max_per_team=self.settings.max_concurrent_per_team)
             if not job:
                 await asyncio.sleep(2)
@@ -439,8 +462,24 @@ class Orchestrator:
                             if merged:
                                 self.logger.info("[%s] PR auto-merged: %s", identifier, pr_url)
                                 await self._post_comment(issue_id, "PR automatically merged to main.")
+                            else:
+                                # Auto-merge failed — resume Claude session to fix and merge
+                                claude_sid = self.db.get_last_claude_session_id(identifier)
+                                if claude_sid and not self.settings.test_mode:
+                                    self.logger.info("[%s] Auto-merge failed, resuming Claude to fix merge", identifier)
+                                    merge_ok = await self._claude_fix_and_merge(
+                                        identifier, claude_sid, pr_url, session_dir, workdir, ssh_env, job_id,
+                                    )
+                                    if merge_ok:
+                                        self.logger.info("[%s] Claude fixed merge, PR merged: %s", identifier, pr_url)
+                                        await self._post_comment(issue_id, "PR automatically merged to main (after Claude resolved merge issues).")
+                                    else:
+                                        self.set_queue_paused(True, f"Auto-merge failed for {identifier} (Claude could not resolve)")
+                                else:
+                                    self.set_queue_paused(True, f"Auto-merge failed for {identifier}")
                 else:
                     await self._set_named_state(issue_id, team_id, self._get_state_name("status_error", self.settings.error_state_name))
+                    self.set_queue_paused(True, f"Job failed for {identifier}")
 
                 if ok:
                     self.logger.info("[%s] Completed successfully (status: %s)", identifier, status)
@@ -1098,8 +1137,69 @@ After the pre-commit review is complete and all tests pass:
 
         return None
 
+    async def _claude_fix_and_merge(
+        self,
+        identifier: str,
+        claude_session_id: str,
+        pr_url: str,
+        session_dir: Path,
+        workdir: Path | None,
+        ssh_env: dict[str, str] | None,
+        job_id: int,
+    ) -> bool:
+        """Resume a Claude session to resolve merge issues and merge the PR.
+
+        Returns True if the PR was successfully merged after Claude's intervention.
+        """
+        merge_prompt = (
+            f"The pull request {pr_url} could not be automatically merged. "
+            "This usually means there are merge conflicts with the base branch, "
+            "or required checks are failing.\n\n"
+            "Please:\n"
+            "1. Pull the latest changes from the base branch and rebase or merge them into your branch.\n"
+            "2. Resolve any merge conflicts.\n"
+            "3. Run tests to make sure everything still passes.\n"
+            "4. Push the updated branch.\n\n"
+            "Do NOT create a new PR — just update the existing branch so the open PR becomes mergeable."
+        )
+
+        self.logger.info("[%s] Calling Claude to fix merge (session %s)", identifier, claude_session_id)
+
+        proc_holder: dict = {}
+        self._proc_holders[job_id] = proc_holder
+        try:
+            result = await asyncio.to_thread(
+                self.runner.run, identifier, merge_prompt, session_dir, workdir,
+                proc_holder, claude_session_id, ssh_env,
+            )
+        finally:
+            self._proc_holders.pop(job_id, None)
+
+        self.logger.info(
+            "[%s] Claude merge-fix exited with code %d (stdout: %d bytes)",
+            identifier, result.returncode, len(result.stdout),
+        )
+
+        # Update session ID in case Claude created a new one
+        new_sid = getattr(result, "claude_session_id", None)
+        if new_sid:
+            self.db.set_claude_session_id(job_id, new_sid)
+
+        if result.returncode != 0:
+            self.logger.warning("[%s] Claude merge-fix failed (exit %d)", identifier, result.returncode)
+            return False
+
+        # Try merging again now that Claude has (hopefully) fixed things
+        merged = await self._merge_github_pr(pr_url)
+        return merged
+
     async def _merge_github_pr(self, pr_url: str) -> bool:
-        """Merge a GitHub PR via API. Retries a few times for newly-created PRs."""
+        """Merge a GitHub PR via API.
+
+        Strategy: first wait for GitHub to compute mergeability by polling the
+        PR endpoint (``mergeable`` flips from ``null`` to ``true``/``false``),
+        then attempt the merge.  This avoids blind 405 retries.
+        """
         if not self.settings.github_token:
             return False
         import re
@@ -1107,25 +1207,51 @@ After the pre-commit review is complete and all tests pass:
         if not m:
             return False
         owner, repo, pr_number = m.group(1), m.group(2), m.group(3)
-        delays = [5, 10, 20]  # seconds between retries
+        headers = {
+            "Authorization": f"Bearer {self.settings.github_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        pr_api = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                for attempt in range(len(delays) + 1):
+                # Phase 1: wait for mergeability to be computed
+                poll_delays = [3, 5, 10, 15, 20, 30]  # up to ~83s total
+                mergeable = None
+                for i, delay in enumerate(poll_delays):
+                    pr_resp = await client.get(pr_api, headers=headers)
+                    if pr_resp.status_code == 200:
+                        pr_data = pr_resp.json()
+                        mergeable = pr_data.get("mergeable")
+                        mergeable_state = pr_data.get("mergeable_state", "unknown")
+                        if mergeable is not None:
+                            self.logger.info("PR %s mergeable=%s state=%s (poll %d/%d)",
+                                             pr_url, mergeable, mergeable_state, i + 1, len(poll_delays))
+                            break
+                    self.logger.info("PR mergeability not yet computed, waiting %ds (%d/%d)",
+                                     delay, i + 1, len(poll_delays))
+                    await asyncio.sleep(delay)
+
+                if mergeable is False:
+                    mergeable_state = pr_data.get("mergeable_state", "unknown")
+                    self.logger.warning("PR is not mergeable (state=%s): %s", mergeable_state, pr_url)
+                    return False
+
+                # Phase 2: attempt merge (with a short retry for race conditions)
+                merge_delays = [5, 15, 30]
+                for attempt in range(len(merge_delays) + 1):
                     resp = await client.put(
-                        f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/merge",
-                        headers={
-                            "Authorization": f"Bearer {self.settings.github_token}",
-                            "Accept": "application/vnd.github+json",
-                            "X-GitHub-Api-Version": "2022-11-28",
-                        },
+                        f"{pr_api}/merge",
+                        headers=headers,
                         json={"merge_method": "squash"},
                     )
                     if resp.status_code == 200:
                         return True
-                    # 405 = "not mergeable" — GitHub may still be computing mergeability
-                    if resp.status_code == 405 and attempt < len(delays):
-                        self.logger.info("PR not yet mergeable, retrying in %ds (%d/%d)", delays[attempt], attempt + 1, len(delays))
-                        await asyncio.sleep(delays[attempt])
+                    if resp.status_code == 405 and attempt < len(merge_delays):
+                        self.logger.info("PR merge returned 405, retrying in %ds (%d/%d)",
+                                         merge_delays[attempt], attempt + 1, len(merge_delays))
+                        await asyncio.sleep(merge_delays[attempt])
                         continue
                     self.logger.warning("GitHub merge failed: %s %s", resp.status_code, resp.text[:200])
                     return False

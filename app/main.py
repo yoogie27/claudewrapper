@@ -58,6 +58,8 @@ async def index(request: Request) -> Any:
         row = db.get_issue_by_identifier(ident)
         if row and row["last_title"]:
             titles[ident] = row["last_title"]
+    queue_paused = orchestrator.is_queue_paused()
+    queue_paused_reason = db.get_config("queue_paused_reason") or ""
     return templates.TemplateResponse(
         "index.html",
         {
@@ -69,6 +71,8 @@ async def index(request: Request) -> Any:
             "settings": settings,
             "titles": titles,
             "active": "dashboard",
+            "queue_paused": queue_paused,
+            "queue_paused_reason": queue_paused_reason,
         },
     )
 
@@ -379,6 +383,30 @@ async def api_team_pause(team_id: str = Form(...)) -> Any:
     currently_paused = db.is_team_paused(team_id)
     db.set_team_paused(team_id, not currently_paused)
     return RedirectResponse("/teams", status_code=303)
+
+
+@app.post("/api/poll-now")
+async def poll_now() -> Any:
+    """Trigger an immediate Linear poll."""
+    try:
+        found = await orchestrator.poll_now()
+        return JSONResponse({"ok": True, "found": found})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/api/queue/pause")
+async def queue_pause() -> Any:
+    """Pause the global job queue."""
+    orchestrator.set_queue_paused(True, "Manual pause via dashboard")
+    return JSONResponse({"ok": True, "paused": True})
+
+
+@app.post("/api/queue/resume")
+async def queue_resume() -> Any:
+    """Resume the global job queue."""
+    orchestrator.set_queue_paused(False)
+    return JSONResponse({"ok": True, "paused": False})
 
 
 @app.post("/api/cancel")

@@ -24,30 +24,30 @@
     {% if status == "running" and job_id %}
     <form method="post" action="/api/cancel" style="display:inline">
       <input type="hidden" name="job_id" value="{{ job_id }}" />
-      <button type="submit" class="btn btn-sm btn-danger">Cancel</button>
+      <button type="submit" class="btn btn-sm btn-danger" title="Terminate the Claude subprocess for this job. The job will be marked as failed.">Cancel</button>
     </form>
     {% endif %}
     {% if status in ("failed", "done", "awaiting_feedback") %}
-    <form method="post" action="/api/reprocess" style="display:inline" title="Re-run post-processing (comment, state, PR) without re-running Claude">
+    <form method="post" action="/api/reprocess" style="display:inline">
       <input type="hidden" name="identifier" value="{{ identifier }}" />
-      <button type="submit" class="btn btn-sm btn-primary">Reprocess</button>
+      <button type="submit" class="btn btn-sm btn-primary" title="Re-run only the post-processing step (post Linear comment, update ticket state, create PR) without re-running Claude. Useful when Claude succeeded but the follow-up steps failed.">Reprocess</button>
     </form>
     {% endif %}
     {% if status == "done" and pr_url %}
     <form method="post" action="/api/merge" style="display:inline">
       <input type="hidden" name="run_id" value="{{ job_id }}" />
-      <button type="submit" class="btn btn-sm btn-primary">Merge PR</button>
+      <button type="submit" class="btn btn-sm btn-primary" title="Squash-merge this pull request into the main branch via the GitHub API">Merge PR</button>
     </form>
-    <a href="{{ pr_url }}" target="_blank" class="btn btn-sm btn-secondary">View PR</a>
+    <a href="{{ pr_url }}" target="_blank" class="btn btn-sm btn-secondary" title="Open the GitHub pull request in a new tab">View PR</a>
     {% endif %}
-    <a href="/sessions/{{ identifier }}/prompt" class="btn btn-sm btn-secondary">View Prompt</a>
+    <a href="/sessions/{{ identifier }}/prompt" class="btn btn-sm btn-secondary" title="View the full prompt that was sent to Claude for this ticket">View Prompt</a>
     {% if status != "running" %}
-    <form method="post" action="/api/cleanup" style="display:inline" title="Remove worktree, session files, and DB entry" data-confirm="Delete worktree and session data for {{ identifier }}?">
+    <form method="post" action="/api/cleanup" style="display:inline" data-confirm="Delete worktree and session data for {{ identifier }}?">
       <input type="hidden" name="identifier" value="{{ identifier }}" />
-      <button type="submit" class="btn btn-sm btn-danger">Clean</button>
+      <button type="submit" class="btn btn-sm btn-danger" title="Permanently delete the git worktree, session files (prompt, stdout, stderr), and database entry for this ticket. This cannot be undone.">Clean</button>
     </form>
     {% endif %}
-    <a href="/" class="btn btn-sm btn-secondary">Dashboard</a>
+    <a href="/" class="btn btn-sm btn-secondary" title="Back to the main dashboard">Dashboard</a>
   </div>
 </div>
 
