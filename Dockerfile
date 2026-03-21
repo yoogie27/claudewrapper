@@ -29,9 +29,14 @@ RUN pip install --no-cache-dir -e .
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Create non-root user (required for Claude Code --dangerously-skip-permissions flag)
+RUN useradd -m -u 1000 claude && chown -R claude:claude /app /data 2>/dev/null || true
+
 # Git config (needed for commits inside the container)
 RUN git config --global user.name "ClaudeWrapper" \
     && git config --global user.email "claudewrapper@docker"
+
+USER claude
 
 EXPOSE 8645
 

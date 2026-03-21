@@ -43,11 +43,6 @@ class ClaudeRunner:
         rendered = re.sub(r"--resume\s+''\s*", '', rendered)
         rendered = re.sub(r'--session\s+""\s*', '', rendered)
 
-        # Claude Code rejects --dangerously-skip-permissions when running as root (e.g. in Docker).
-        # Container isolation already provides the necessary sandboxing.
-        if os.geteuid() == 0:
-            rendered = re.sub(r'--dangerously-skip-permissions\s*', '', rendered)
-
         # Force stream-json instead of plain json — plain json emits a single
         # blob at exit which makes real-time streaming impossible.
         rendered = re.sub(r'--output-format\s+json\b', '--output-format stream-json', rendered)
