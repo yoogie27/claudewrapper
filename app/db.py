@@ -242,11 +242,13 @@ class Database:
             )
         self._conn.commit()
 
-    def list_team_mappings(self) -> list[sqlite3.Row]:
-        return self._conn.execute("SELECT * FROM team_mappings ORDER BY team_name").fetchall()
+    def list_team_mappings(self) -> list[dict]:
+        rows = self._conn.execute("SELECT * FROM team_mappings ORDER BY team_name").fetchall()
+        return [dict(row) for row in rows]
 
-    def get_team_mapping(self, team_id: str) -> sqlite3.Row | None:
-        return self._conn.execute("SELECT * FROM team_mappings WHERE team_id = ?", (team_id,)).fetchone()
+    def get_team_mapping(self, team_id: str) -> dict | None:
+        row = self._conn.execute("SELECT * FROM team_mappings WHERE team_id = ?", (team_id,)).fetchone()
+        return dict(row) if row else None
 
     def upsert_issue_state(
         self,
