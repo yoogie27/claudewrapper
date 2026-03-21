@@ -463,24 +463,37 @@ async def merge_pr(request: Request, run_id: int = Form(...)) -> Any:
 @app.post("/api/retry")
 async def retry_ticket(identifier: str = Form(...)) -> Any:
     logger = logging.getLogger(__name__)
-    logger.info("Retry requested for: %s", identifier)
-    issue = db.get_issue_by_identifier(identifier)
-    if not issue:
-        logger.warning("Issue not found: %s", identifier)
-        return PlainTextResponse("Unknown ticket", status_code=404)
-    logger.info("Enqueueing retry job for %s (issue_id=%s, team_id=%s)", identifier, issue["issue_id"], issue["team_id"])
-    db.enqueue_job(issue["issue_id"], issue["identifier"], issue["team_id"], "retry", force=True)
-    logger.info("Retry job enqueued successfully for %s", identifier)
-    return RedirectResponse(url="/", status_code=303)
+    logger.info("=== RETRY REQUESTED: %s ===", identifier)
+    try:
+        issue = db.get_issue_by_identifier(identifier)
+        if not issue:
+            logger.warning("Issue not found: %s", identifier)
+            return PlainTextResponse("Unknown ticket", status_code=404)
+        logger.info("Issue found: id=%s, team=%s", issue["issue_id"], issue["team_id"])
+        db.enqueue_job(issue["issue_id"], issue["identifier"], issue["team_id"], "retry", force=True)
+        logger.info("=== RETRY JOB ENQUEUED ===")
+        return RedirectResponse(url="/", status_code=303)
+    except Exception as exc:
+        logger.exception("=== RETRY FAILED: %s ===", exc)
+        raise
 
 
 @app.post("/api/retry-job")
 async def retry_job(identifier: str = Form(...)) -> Any:
-    issue = db.get_issue_by_identifier(identifier)
-    if not issue:
-        return PlainTextResponse("Unknown ticket", status_code=404)
-    db.enqueue_job(issue["issue_id"], issue["identifier"], issue["team_id"], "retry_job", force=True)
-    return RedirectResponse(url="/", status_code=303)
+    logger = logging.getLogger(__name__)
+    logger.info("=== RETRY-JOB REQUESTED: %s ===", identifier)
+    try:
+        issue = db.get_issue_by_identifier(identifier)
+        if not issue:
+            logger.warning("Issue not found: %s", identifier)
+            return PlainTextResponse("Unknown ticket", status_code=404)
+        logger.info("Issue found: id=%s, team=%s", issue["issue_id"], issue["team_id"])
+        db.enqueue_job(issue["issue_id"], issue["identifier"], issue["team_id"], "retry_job", force=True)
+        logger.info("=== RETRY-JOB ENQUEUED ===")
+        return RedirectResponse(url="/", status_code=303)
+    except Exception as exc:
+        logger.exception("=== RETRY-JOB FAILED: %s ===", exc)
+        raise
 
 
 @app.post("/api/reprocess")
