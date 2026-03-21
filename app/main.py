@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -461,6 +462,7 @@ async def merge_pr(request: Request, run_id: int = Form(...)) -> Any:
 
 @app.post("/api/retry")
 async def retry_ticket(identifier: str = Form(...)) -> Any:
+    logger = logging.getLogger(__name__)
     logger.info("Retry requested for: %s", identifier)
     issue = db.get_issue_by_identifier(identifier)
     if not issue:
