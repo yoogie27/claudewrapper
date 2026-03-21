@@ -283,14 +283,15 @@ class Database:
     def get_issue_state(self, issue_id: str) -> sqlite3.Row | None:
         return self._conn.execute("SELECT * FROM issue_state WHERE issue_id = ?", (issue_id,)).fetchone()
 
-    def enqueue_job(self, issue_id: str, identifier: str, team_id: str, reason: str) -> None:
+    def enqueue_job(self, issue_id: str, identifier: str, team_id: str, reason: str, force: bool = False) -> None:
         now = utc_now()
-        existing = self._conn.execute(
-            "SELECT 1 FROM job_queue WHERE issue_id = ? AND status IN ('pending','running')",
-            (issue_id,),
-        ).fetchone()
-        if existing:
-            return
+        if not force:
+            existing = self._conn.execute(
+                "SELECT 1 FROM job_queue WHERE issue_id = ? AND status IN ('pending','running')",
+                (issue_id,),
+            ).fetchone()
+            if existing:
+                return
         self._conn.execute(
             "INSERT INTO job_queue(issue_id, identifier, team_id, reason, created_at, status) VALUES(?, ?, ?, ?, ?, 'pending')",
             (issue_id, identifier, team_id, reason, now),

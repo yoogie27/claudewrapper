@@ -464,7 +464,7 @@ async def retry_ticket(identifier: str = Form(...)) -> Any:
     issue = db.get_issue_by_identifier(identifier)
     if not issue:
         return PlainTextResponse("Unknown ticket", status_code=404)
-    db.enqueue_job(issue["issue_id"], issue["identifier"], issue["team_id"], "retry")
+    db.enqueue_job(issue["issue_id"], issue["identifier"], issue["team_id"], "retry", force=True)
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -473,7 +473,7 @@ async def retry_job(identifier: str = Form(...)) -> Any:
     issue = db.get_issue_by_identifier(identifier)
     if not issue:
         return PlainTextResponse("Unknown ticket", status_code=404)
-    db.enqueue_job(issue["issue_id"], issue["identifier"], issue["team_id"], "retry_job")
+    db.enqueue_job(issue["issue_id"], issue["identifier"], issue["team_id"], "retry_job", force=True)
     return RedirectResponse(url="/", status_code=303)
 
 
