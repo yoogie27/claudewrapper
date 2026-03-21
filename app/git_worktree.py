@@ -69,7 +69,16 @@ def ensure_worktree(repo: Path, worktree_root: Path, identifier: str, env: dict[
         _run(["git", "-C", str(repo), "fetch", "origin", base], env=env)
         base_ref = f"origin/{base}"
     except Exception:
-        base_ref = base
+        # If the specified base_branch doesn't exist, fall back to default
+        if base_branch:
+            base = get_default_branch(repo)
+            try:
+                _run(["git", "-C", str(repo), "fetch", "origin", base], env=env)
+                base_ref = f"origin/{base}"
+            except Exception:
+                base_ref = base
+        else:
+            base_ref = base
 
     if worktree_path.exists():
         # Always reset to latest main.  With concurrency=1 per project
