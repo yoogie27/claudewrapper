@@ -77,6 +77,14 @@
     </div>
 
     <div class="form-group">
+      <label>Base Branch</label>
+      <input type="text" name="base_branch"
+             value="{{ m['base_branch'] if m and m['base_branch'] else '' }}"
+             placeholder="main (leave empty to auto-detect)" />
+      <div class="hint">Branch to base worktrees on and target for PRs. Leave empty to auto-detect (main or master).</div>
+    </div>
+
+    <div class="form-group">
       <div class="flex-between">
         <label>Default Prompt</label>
         <button type="button" class="btn btn-sm btn-secondary reset-prompt-btn">Reset to default</button>

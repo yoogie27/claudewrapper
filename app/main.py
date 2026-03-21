@@ -128,8 +128,10 @@ async def set_mapping(
     auto_process: int = Form(0),
     auto_merge: int = Form(0),
     github_repo_url: str = Form(""),
+    base_branch: str = Form(""),
 ) -> Any:
     github_repo_url = github_repo_url.strip()
+    base_branch = base_branch.strip()
 
     # If a GitHub URL is provided and local_path is empty, or repos_dir is configured, trigger auto-clone
     if github_repo_url and (not local_path or settings.repos_dir):
@@ -140,6 +142,7 @@ async def set_mapping(
             team_id, team_name, local_path, default_prompt,
             bool(int(enabled)), auto_process=bool(auto_process),
             auto_merge=bool(auto_merge), github_repo_url=github_repo_url,
+            base_branch=base_branch,
         )
         db.update_clone_status(team_id, "cloning")
 
@@ -159,6 +162,7 @@ async def set_mapping(
             team_id, team_name, local_path, default_prompt,
             bool(int(enabled)), auto_process=bool(auto_process),
             auto_merge=bool(auto_merge), github_repo_url=github_repo_url,
+            base_branch=base_branch,
         )
     return RedirectResponse(url="/teams", status_code=303)
 

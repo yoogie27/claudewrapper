@@ -162,6 +162,9 @@ class Database:
             if "clone_status" not in tm_cols:
                 self._conn.execute("ALTER TABLE team_mappings ADD COLUMN clone_status TEXT DEFAULT ''")
                 self._conn.commit()
+            if "base_branch" not in tm_cols:
+                self._conn.execute("ALTER TABLE team_mappings ADD COLUMN base_branch TEXT DEFAULT ''")
+                self._conn.commit()
 
     def wal_checkpoint(self) -> None:
         """Force a WAL checkpoint to reclaim disk space."""
@@ -205,12 +208,12 @@ class Database:
         else:
             self.delete_config(f"paused:{team_id}")
 
-    def upsert_team_mapping(self, team_id: str, team_name: str, local_path: str, default_prompt: str, enabled: bool, auto_process: bool = True, auto_merge: bool = False, github_repo_url: str = "") -> None:
+    def upsert_team_mapping(self, team_id: str, team_name: str, local_path: str, default_prompt: str, enabled: bool, auto_process: bool = True, auto_merge: bool = False, github_repo_url: str = "", base_branch: str = "") -> None:
         now = utc_now()
         self._conn.execute(
             """
-            INSERT INTO team_mappings(team_id, team_name, local_path, default_prompt, enabled, created_at, updated_at, auto_process, auto_merge, github_repo_url)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO team_mappings(team_id, team_name, local_path, default_prompt, enabled, created_at, updated_at, auto_process, auto_merge, github_repo_url, base_branch)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(team_id) DO UPDATE SET
                 team_name=excluded.team_name,
                 local_path=excluded.local_path,
@@ -219,9 +222,10 @@ class Database:
                 updated_at=excluded.updated_at,
                 auto_process=excluded.auto_process,
                 auto_merge=excluded.auto_merge,
-                github_repo_url=excluded.github_repo_url
+                github_repo_url=excluded.github_repo_url,
+                base_branch=excluded.base_branch
             """,
-            (team_id, team_name, local_path, default_prompt, 1 if enabled else 0, now, now, 1 if auto_process else 0, 1 if auto_merge else 0, github_repo_url),
+            (team_id, team_name, local_path, default_prompt, 1 if enabled else 0, now, now, 1 if auto_process else 0, 1 if auto_merge else 0, github_repo_url, base_branch),
         )
         self._conn.commit()
 

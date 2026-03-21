@@ -56,7 +56,7 @@ def get_default_branch(repo: Path) -> str:
     return "main"
 
 
-def ensure_worktree(repo: Path, worktree_root: Path, identifier: str, env: dict[str, str] | None = None) -> Path:
+def ensure_worktree(repo: Path, worktree_root: Path, identifier: str, env: dict[str, str] | None = None, base_branch: str = "") -> Path:
     repo = repo.resolve()
     worktree_root = worktree_root.resolve()
     worktree_root.mkdir(parents=True, exist_ok=True)
@@ -64,7 +64,7 @@ def ensure_worktree(repo: Path, worktree_root: Path, identifier: str, env: dict[
     branch = f"ticket/{identifier}"
     worktree_path = worktree_root / identifier
 
-    base = get_default_branch(repo)
+    base = base_branch if base_branch else get_default_branch(repo)
     try:
         _run(["git", "-C", str(repo), "fetch", "origin", base], env=env)
         base_ref = f"origin/{base}"

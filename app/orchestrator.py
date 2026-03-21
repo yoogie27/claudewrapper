@@ -385,7 +385,7 @@ class Orchestrator:
 
                 if self.settings.use_git_worktrees and workdir:
                     worktree_root = Path(self.settings.worktree_root)
-                    worktree_path = ensure_worktree(workdir, worktree_root, identifier, env=ssh_env)
+                    worktree_path = ensure_worktree(workdir, worktree_root, identifier, env=ssh_env, base_branch=mapping.get("base_branch", ""))
                     write_worktree_meta(session_dir, workdir, worktree_path)
                     workdir = worktree_path
 
@@ -452,7 +452,7 @@ class Orchestrator:
                     await self._set_hitl_state(issue_id, team_id)
                 elif ok:
                     await self._set_named_state(issue_id, team_id, self._get_state_name("status_review", self.settings.review_state_name) or self._get_state_name("status_done", self.settings.done_state_name))
-                    pr_url = await self._maybe_create_pr(issue, session_dir, identifier)
+                    pr_url = await self._maybe_create_pr(issue, session_dir, identifier, base_branch=mapping.get("base_branch", ""))
                     if pr_url:
                         self.db.set_session_pr_url(job_id, pr_url)
                         await self._post_comment(issue_id, f"Pull request: {pr_url}")
@@ -881,10 +881,11 @@ After the pre-commit review is complete and all tests pass:
             await self._set_hitl_state(issue_id, team_id)
         else:
             await self._set_named_state(issue_id, team_id, self._get_state_name("status_review", self.settings.review_state_name) or self._get_state_name("status_done", self.settings.done_state_name))
+            mapping = self.db.get_team_mapping(team_id)
             # Only create PR if we don't already have one
             pr_url = session["pr_url"]
             if not pr_url:
-                pr_url = await self._maybe_create_pr(issue, session_dir, identifier)
+                pr_url = await self._maybe_create_pr(issue, session_dir, identifier, base_branch=mapping.get("base_branch", "") if mapping else "")
             if pr_url:
                 run_id = session["run_id"]
                 if run_id:
@@ -896,7 +897,6 @@ After the pre-commit review is complete and all tests pass:
                 )
                 if not pr_comment_exists:
                     await self._post_comment(issue_id, f"Pull request: {pr_url}")
-                mapping = self.db.get_team_mapping(team_id)
                 if mapping and mapping["auto_merge"]:
                     merged = await self._merge_github_pr(pr_url)
                     if merged:
@@ -1087,7 +1087,7 @@ After the pre-commit review is complete and all tests pass:
             except Exception as exc:
                 self.logger.error("Cleanup error: %s", exc)
 
-    async def _maybe_create_pr(self, issue: dict[str, Any], session_dir: Path, identifier: str) -> str | None:
+    async def _maybe_create_pr(self, issue: dict[str, Any], session_dir: Path, identifier: str, base_branch: str = "") -> str | None:
         """Push the worktree branch and open a GitHub PR if configured and commits exist."""
         if not self.settings.github_token:
             return None
@@ -1099,7 +1099,7 @@ After the pre-commit review is complete and all tests pass:
         worktree = Path(meta["worktree"])
         branch = f"ticket/{identifier}"
 
-        base = get_default_branch(repo)
+        base = base_branch if base_branch else get_default_branch(repo)
         try:
             base_ref = f"origin/{base}"
             count = await asyncio.to_thread(get_commit_count_vs_base, worktree, base_ref)
