@@ -461,10 +461,14 @@ async def merge_pr(request: Request, run_id: int = Form(...)) -> Any:
 
 @app.post("/api/retry")
 async def retry_ticket(identifier: str = Form(...)) -> Any:
+    logger.info("Retry requested for: %s", identifier)
     issue = db.get_issue_by_identifier(identifier)
     if not issue:
+        logger.warning("Issue not found: %s", identifier)
         return PlainTextResponse("Unknown ticket", status_code=404)
+    logger.info("Enqueueing retry job for %s (issue_id=%s, team_id=%s)", identifier, issue["issue_id"], issue["team_id"])
     db.enqueue_job(issue["issue_id"], issue["identifier"], issue["team_id"], "retry", force=True)
+    logger.info("Retry job enqueued successfully for %s", identifier)
     return RedirectResponse(url="/", status_code=303)
 
 

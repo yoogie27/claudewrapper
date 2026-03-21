@@ -291,12 +291,16 @@ class Database:
                 (issue_id,),
             ).fetchone()
             if existing:
+                import logging
+                logging.getLogger(__name__).debug("Job already pending/running for %s, skipping enqueue", identifier)
                 return
         self._conn.execute(
             "INSERT INTO job_queue(issue_id, identifier, team_id, reason, created_at, status) VALUES(?, ?, ?, ?, ?, 'pending')",
             (issue_id, identifier, team_id, reason, now),
         )
         self._conn.commit()
+        import logging
+        logging.getLogger(__name__).info("Enqueued job for %s (reason=%s, force=%s)", identifier, reason, force)
 
     def dequeue_job(self, worker_id: str, max_per_team: int = 0) -> sqlite3.Row | None:
         with self.tx() as conn:
