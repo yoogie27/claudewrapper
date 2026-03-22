@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     gnupg \
     build-essential \
+    gh \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js 22 LTS (required for Claude Code CLI)
