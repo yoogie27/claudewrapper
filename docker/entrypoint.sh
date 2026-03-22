@@ -51,5 +51,10 @@ echo "==> Node:        $(node --version)"
 echo "==> Python:      $(python --version)"
 echo ""
 
-# ── Start Application ─────────────────────────────────────
-exec "$@"
+# ── Start Application as non-root user ────────────────────
+# Ensure /data is writable by claude user
+mkdir -p /data
+chown -R claude:claude /data 2>/dev/null || true
+
+# Switch to non-root user and run the application
+exec su -s /bin/sh claude -c "$*"
