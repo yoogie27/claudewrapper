@@ -7,6 +7,12 @@
   <p>Overview of jobs, sessions, and system status</p>
 </div>
 
+<!-- Queue Paused Warning Banner -->
+<div id="queue-paused-banner" style="display:none; background:#ff4444; color:white; padding:20px; border-radius:8px; margin-bottom:20px; text-align:center; font-size:18px; font-weight:bold; border:3px solid #cc0000; box-shadow: 0 0 20px rgba(255,0,0,0.5);">
+  🛑 <strong>QUEUE IS PAUSED</strong> 🛑
+  <div id="queue-paused-banner-reason" style="margin-top:10px; font-size:14px; font-weight:normal;"></div>
+</div>
+
 <!-- Queue Controls -->
 <div class="card" id="queue-controls">
   <div class="card-header">
@@ -304,17 +310,22 @@
     const badgeEl = document.getElementById('queue-status-badge');
     const wrapEl = document.getElementById('queue-toggle-wrap');
     const reasonEl = document.getElementById('queue-paused-reason');
+    const bannerEl = document.getElementById('queue-paused-banner');
+    const bannerReasonEl = document.getElementById('queue-paused-banner-reason');
 
     if (paused) {
       badgeEl.innerHTML = '<span class="badge badge-failed">PAUSED</span>';
       wrapEl.innerHTML = `<button type="button" id="queue-resume-btn" class="btn btn-primary"
         title="Resume processing pending jobs in the queue. Active jobs are not affected.">Resume queue</button>`;
       reasonEl.textContent = reason ? 'Reason: ' + reason : '';
+      bannerEl.style.display = 'block';
+      bannerReasonEl.textContent = reason ? '⚠️ ' + reason : 'No reason specified';
     } else {
       badgeEl.innerHTML = '<span class="badge badge-done">ACTIVE</span>';
       wrapEl.innerHTML = `<button type="button" id="queue-pause-btn" class="btn btn-danger"
         title="Pause the queue so no new jobs are picked up. Currently running jobs will finish normally.">Pause queue</button>`;
       reasonEl.textContent = '';
+      bannerEl.style.display = 'none';
     }
 
     // Re-bind click handlers
