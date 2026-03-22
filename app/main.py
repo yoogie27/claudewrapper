@@ -9,6 +9,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+# Configure logging to show INFO messages
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s [%(name)s] %(message)s')
+
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
