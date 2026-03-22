@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS team_mappings (
     auto_process INTEGER NOT NULL DEFAULT 1,
     auto_merge INTEGER NOT NULL DEFAULT 0,
     github_repo_url TEXT DEFAULT '',
-    clone_status TEXT DEFAULT ''
+    clone_status TEXT DEFAULT '',
+    base_branch TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS issue_state (
@@ -60,7 +61,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_dir TEXT NOT NULL,
     last_error TEXT,
     claude_session_id TEXT,
-    pr_url TEXT
+    pr_url TEXT,
+    pr_merged INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_identifier ON sessions(identifier);
