@@ -101,7 +101,7 @@ class Database:
         self._conn.commit()
 
     def _migrate(self) -> None:
-        """Drop old v1 tables if they exist (Linear-era schema)."""
+        """Drop old v1 tables if they exist."""
         tables = {r[0] for r in self._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
