@@ -279,7 +279,6 @@ function renderTasks() {
                 <span class="badge badge-${t.status}">${t.status.replace('_', ' ')}</span>
             </div>
             <div class="task-item-title">${esc(t.title)}</div>
-            ${t.total_cost_usd > 0 ? `<div class="task-item-cost">$${t.total_cost_usd.toFixed(4)}</div>` : ''}
         </div>
     `).join('');
 }
