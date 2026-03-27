@@ -144,6 +144,44 @@ async def create_project(request: Request) -> Any:
     return project
 
 
+@app.post("/api/projects/{project_id}/reclone")
+async def reclone_project(project_id: str) -> Any:
+    """Wipe the workspace directory and re-clone from the project's GitHub URL."""
+    project = db.get_project(project_id)
+    if not project:
+        return JSONResponse({"error": "Not found"}, 404)
+
+    github_url = project.get("github_repo_url", "").strip()
+    if not github_url:
+        return JSONResponse({"error": "No Git URL configured for this project"}, 400)
+
+    repo_path = settings.project_repo_path(project["slug"])
+
+    # Wipe existing directory
+    import shutil
+    if repo_path.exists():
+        shutil.rmtree(str(repo_path), ignore_errors=True)
+    repo_path.mkdir(parents=True, exist_ok=True)
+
+    # Clone
+    import subprocess, sys
+    ssh_env = orchestrator._get_git_ssh_env()
+    env = {**__import__('os').environ, **(ssh_env or {})}
+    try:
+        cflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        result = subprocess.run(
+            ["git", "clone", github_url, str(repo_path)],
+            capture_output=True, text=True, timeout=180, env=env, creationflags=cflags,
+        )
+        if result.returncode != 0:
+            error = result.stderr.strip() or result.stdout.strip()
+            return {"ok": False, "error": error}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+    return {"ok": True}
+
+
 @app.put("/api/projects/{project_id}")
 async def update_project(project_id: str, request: Request) -> Any:
     data = await request.json()

@@ -258,13 +258,15 @@ html.dark .project-item.active { background: #2a1520; }
     opacity: .5;
     vertical-align: middle;
 }
-.project-delete {
+.project-reclone, .project-delete {
     font-size: 16px;
     opacity: 0;
     transition: opacity .15s;
     padding: 2px 6px;
 }
+.project-item:hover .project-reclone,
 .project-item:hover .project-delete { opacity: .5; }
+.project-reclone:hover { opacity: 1 !important; color: var(--accent); }
 .project-delete:hover { opacity: 1 !important; color: var(--error); }
 
 .empty-hint {
