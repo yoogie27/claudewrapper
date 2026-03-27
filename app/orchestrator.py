@@ -263,10 +263,22 @@ class Orchestrator:
                                                             base_branch=project.get("base_branch", ""))
             if pr_url:
                 self.db.update_task(task["id"], pr_url=pr_url, status="in_review")
-                # Tell the user about the PR
                 pr_msg_id = uuid.uuid4().hex
                 self.db.create_message(pr_msg_id, task["id"], "system",
                                        f"Pull request created: [{pr_url}]({pr_url})")
+
+                # Auto-merge the PR
+                merged = await self._merge_github_pr(pr_url)
+                merge_msg_id = uuid.uuid4().hex
+                if merged:
+                    self.db.update_task(task["id"], pr_merged=1, status="done")
+                    self.db.create_message(merge_msg_id, task["id"], "system",
+                                           f"PR merged and closed successfully.")
+                    self.logger.info("[%s] PR auto-merged: %s", identifier, pr_url)
+                else:
+                    self.db.create_message(merge_msg_id, task["id"], "system",
+                                           f"**PR could not be auto-merged.** Check for merge conflicts or required status checks on [{pr_url}]({pr_url}).")
+                    self.logger.warning("[%s] PR auto-merge failed: %s", identifier, pr_url)
             elif pr_error:
                 # Surface the PR failure in chat so the user sees it
                 err_msg_id = uuid.uuid4().hex
