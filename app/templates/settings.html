@@ -23,6 +23,17 @@
         <div id="gh-results" style="margin-top:8px"></div>
     </div>
 
+    <!-- Mode Prompts -->
+    <div class="settings-section">
+        <h3>Task Mode Prompts</h3>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
+            Customize the system prompt Claude receives for each task type. These are the instructions that tell Claude <em>how</em> to approach the work.
+        </p>
+        <div id="mode-prompts-container">
+            <div style="color:var(--text-dim);font-size:13px">Loading...</div>
+        </div>
+    </div>
+
     <!-- SSH Deploy Key -->
     <div class="settings-section">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
@@ -280,6 +291,63 @@ async function copySSHKey() {
         setTimeout(() => { btn.textContent = 'Copy to Clipboard'; }, 2000);
     }
 }
+
+// ── Mode Prompts ──
+async function loadModePrompts() {
+    const container = document.getElementById('mode-prompts-container');
+    try {
+        const resp = await fetch('/api/mode-prompts');
+        const data = await resp.json();
+        container.innerHTML = Object.entries(data).map(([mode, info]) => `
+            <div class="mode-prompt-card">
+                <div class="mode-prompt-header">
+                    <span class="mode-badge" style="background:${{bug:'#ef4444',feature:'#e11d48',redesign:'#f59e0b'}[mode]}">${esc(info.label)}</span>
+                    ${info.is_custom ? '<span style="font-size:11px;color:var(--accent)">customized</span>' : '<span style="font-size:11px;color:var(--text-dim)">default</span>'}
+                    <div style="margin-left:auto;display:flex;gap:6px">
+                        ${info.is_custom ? `<button class="btn btn-sm btn-secondary" onclick="resetModePrompt('${mode}')">Reset</button>` : ''}
+                        <button class="btn btn-sm btn-primary" onclick="saveModePrompt('${mode}')">Save</button>
+                    </div>
+                </div>
+                <textarea class="mode-prompt-editor" id="prompt-${mode}" rows="10">${esc(info.prompt)}</textarea>
+            </div>
+        `).join('');
+    } catch (err) {
+        container.innerHTML = `<div class="diag-row diag-fail"><span class="diag-icon">&#10007;</span> Failed to load: ${esc(err.message)}</div>`;
+    }
+}
+
+async function saveModePrompt(mode) {
+    const textarea = document.getElementById(`prompt-${mode}`);
+    const prompt = textarea.value.trim();
+    try {
+        const resp = await fetch(`/api/mode-prompts/${mode}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ prompt }),
+        });
+        if (resp.ok) {
+            toast('Saved', `${mode} prompt updated`, 'success');
+            loadModePrompts();
+        }
+    } catch { toast('Error', 'Failed to save', 'error'); }
+}
+
+async function resetModePrompt(mode) {
+    if (!confirm(`Reset ${mode} prompt to default?`)) return;
+    try {
+        const resp = await fetch(`/api/mode-prompts/${mode}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ prompt: '' }),
+        });
+        if (resp.ok) {
+            toast('Reset', `${mode} prompt restored to default`, 'info');
+            loadModePrompts();
+        }
+    } catch { toast('Error', 'Failed to reset', 'error'); }
+}
+
+document.addEventListener('DOMContentLoaded', loadModePrompts);
 
 function esc(s) {
     if (!s) return '';

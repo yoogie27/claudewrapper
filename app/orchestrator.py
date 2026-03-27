@@ -290,7 +290,7 @@ class Orchestrator:
     # ── Prompt Building ──
 
     def _build_prompt(self, task: dict, project: dict, messages: list[dict]) -> str:
-        mode_prompt = get_mode_prompt(task["mode"])
+        mode_prompt = get_mode_prompt(task["mode"], db=self.db)
         project_prompt = project.get("default_prompt", "").strip() or DEFAULT_PROMPT
 
         parts = [

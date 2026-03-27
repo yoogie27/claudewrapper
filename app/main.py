@@ -675,6 +675,38 @@ async def get_ssh_public_key() -> Any:
         return {"ok": False, "error": str(exc)}
 
 
+# ── Mode Prompts API ──
+
+@app.get("/api/mode-prompts")
+async def get_mode_prompts() -> Any:
+    """Get all mode prompts (custom overrides + defaults)."""
+    from app.task_modes import get_mode_prompt, get_default_mode_prompt, MODE_LABELS
+    result = {}
+    for mode in ("bug", "feature", "redesign"):
+        custom = db.get_config(f"mode_prompt:{mode}") or ""
+        result[mode] = {
+            "label": MODE_LABELS.get(mode, mode),
+            "prompt": custom.strip() if custom.strip() else get_default_mode_prompt(mode),
+            "is_custom": bool(custom.strip()),
+            "default": get_default_mode_prompt(mode),
+        }
+    return result
+
+
+@app.put("/api/mode-prompts/{mode}")
+async def set_mode_prompt(mode: str, request: Request) -> Any:
+    """Set a custom prompt for a mode. Send empty string to reset to default."""
+    if mode not in ("bug", "feature", "redesign"):
+        return JSONResponse({"error": "Invalid mode"}, 400)
+    data = await request.json()
+    prompt = data.get("prompt", "").strip()
+    if prompt:
+        db.set_config(f"mode_prompt:{mode}", prompt)
+    else:
+        db.delete_config(f"mode_prompt:{mode}")
+    return {"ok": True, "is_custom": bool(prompt)}
+
+
 # ── GitHub Actions Status API ──
 
 @app.get("/api/projects/{project_id}/actions")

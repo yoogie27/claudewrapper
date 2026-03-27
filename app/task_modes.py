@@ -63,7 +63,17 @@ Keep the scope focused. Don't expand beyond what was asked. Refactoring is not a
 }
 
 
-def get_mode_prompt(mode: str) -> str:
+def get_mode_prompt(mode: str, db=None) -> str:
+    """Get the prompt for a mode. Checks DB for custom override first."""
+    if db:
+        custom = db.get_config(f"mode_prompt:{mode}")
+        if custom and custom.strip():
+            return custom.strip()
+    return MODE_PROMPTS.get(mode, MODE_PROMPTS["feature"])
+
+
+def get_default_mode_prompt(mode: str) -> str:
+    """Get the built-in default prompt for a mode (ignoring DB overrides)."""
     return MODE_PROMPTS.get(mode, MODE_PROMPTS["feature"])
 
 
