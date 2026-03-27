@@ -75,6 +75,6 @@ MODE_LABELS = {
 
 MODE_COLORS = {
     "bug": "#ef4444",
-    "feature": "#6366f1",
+    "feature": "#e11d48",
     "redesign": "#f59e0b",
 }

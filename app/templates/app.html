@@ -50,6 +50,15 @@
             <button class="filter-btn" data-status="failed" onclick="filterTasks('failed', this)">Failed</button>
         </div>
         <div class="task-list" id="task-list"></div>
+        <!-- GitHub Actions Status -->
+        <div class="actions-widget" id="actions-widget" style="display:none">
+            <div class="actions-header">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l2 2 4-4"/></svg>
+                <span>Actions</span>
+                <span class="actions-repo" id="actions-repo"></span>
+            </div>
+            <div class="actions-list" id="actions-list"></div>
+        </div>
     </aside>
 
     <!-- Panel 3: Chat -->
@@ -183,6 +192,7 @@ async function selectProject(id) {
     document.getElementById('tasks-project-name').textContent = state.currentProject.name;
     renderProjects();
     await loadTasks();
+    startActionsPoll();
     showPanel('tasks');
 }
 
@@ -254,7 +264,7 @@ function renderTasks() {
         <div class="task-item ${state.currentTask?.id === t.id ? 'active' : ''} task-status-${t.status}"
              onclick="selectTask('${t.id}')">
             <div class="task-item-header">
-                <span class="mode-dot" style="background:${state.modeColors[t.mode] || '#6366f1'}"></span>
+                <span class="mode-dot" style="background:${state.modeColors[t.mode] || '#e11d48'}"></span>
                 <span class="task-item-id">${esc(t.identifier)}</span>
                 <span class="badge badge-${t.status}">${t.status.replace('_', ' ')}</span>
             </div>
@@ -299,7 +309,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!text) {
                 const badge = document.getElementById('quick-task-mode');
                 badge.textContent = 'Feature';
-                badge.style.background = '#6366f1';
+                badge.style.background = '#e11d48';
                 return;
             }
             const resp = await fetch('/api/detect-mode', {
@@ -362,7 +372,7 @@ async function selectTask(id) {
     document.getElementById('chat-task-title').textContent = state.currentTask.title;
     const meta = document.getElementById('chat-task-meta');
     meta.innerHTML = `
-        <span class="mode-badge" style="background:${state.modeColors[state.currentTask.mode] || '#6366f1'}">${state.modeLabels[state.currentTask.mode] || 'Feature'}</span>
+        <span class="mode-badge" style="background:${state.modeColors[state.currentTask.mode] || '#e11d48'}">${state.modeLabels[state.currentTask.mode] || 'Feature'}</span>
         <span class="badge badge-${state.currentTask.status}">${state.currentTask.status.replace('_', ' ')}</span>
         <span>${state.currentTask.identifier}</span>
     `;
@@ -617,7 +627,7 @@ function updateChatHeader() {
     document.getElementById('chat-task-title').textContent = t.title;
     const meta = document.getElementById('chat-task-meta');
     meta.innerHTML = `
-        <span class="mode-badge" style="background:${state.modeColors[t.mode] || '#6366f1'}">${state.modeLabels[t.mode] || 'Feature'}</span>
+        <span class="mode-badge" style="background:${state.modeColors[t.mode] || '#e11d48'}">${state.modeLabels[t.mode] || 'Feature'}</span>
         <span class="badge badge-${t.status}">${t.status.replace('_', ' ')}</span>
         <span>${t.identifier}</span>
     `;
@@ -695,6 +705,62 @@ function escAttr(s) {
     // Escape for use inside HTML attribute values (single-quoted)
     if (!s) return '';
     return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
+// ── GitHub Actions Polling ──
+let _actionsInterval = null;
+function startActionsPoll() {
+    stopActionsPoll();
+    if (!state.currentProject) return;
+    pollActions(); // immediate first poll
+    _actionsInterval = setInterval(() => {
+        if (!document.hidden && state.currentProject) pollActions();
+    }, 20000); // every 20s
+}
+function stopActionsPoll() {
+    if (_actionsInterval) { clearInterval(_actionsInterval); _actionsInterval = null; }
+}
+
+async function pollActions() {
+    if (!state.currentProject) return;
+    const widget = document.getElementById('actions-widget');
+    try {
+        const resp = await fetch(`/api/projects/${state.currentProject.id}/actions`);
+        if (!resp.ok) { widget.style.display = 'none'; return; }
+        const data = await resp.json();
+        if (!data.runs || !data.runs.length) { widget.style.display = 'none'; return; }
+
+        widget.style.display = 'block';
+        document.getElementById('actions-repo').textContent = data.repo || '';
+        const list = document.getElementById('actions-list');
+        list.innerHTML = data.runs.map(r => {
+            const icon = r.status === 'completed'
+                ? (r.conclusion === 'success' ? '<span class="act-icon act-success">&#10003;</span>'
+                   : r.conclusion === 'failure' ? '<span class="act-icon act-fail">&#10007;</span>'
+                   : r.conclusion === 'cancelled' ? '<span class="act-icon act-cancel">&#9679;</span>'
+                   : '<span class="act-icon act-neutral">&#9679;</span>')
+                : '<span class="act-icon act-running"><span class="act-spinner"></span></span>';
+            const branch = r.branch ? `<span class="act-branch">${esc(r.branch)}</span>` : '';
+            const age = timeAgo(r.updated_at || r.created_at);
+            return `<a href="${esc(r.url)}" target="_blank" class="act-row" title="${esc(r.commit_msg)}">
+                ${icon}
+                <span class="act-name">${esc(r.name)}</span>
+                ${branch}
+                <span class="act-time">${age}</span>
+            </a>`;
+        }).join('');
+    } catch {
+        widget.style.display = 'none';
+    }
+}
+
+function timeAgo(iso) {
+    if (!iso) return '';
+    const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 60) return 'now';
+    if (s < 3600) return Math.floor(s/60) + 'm';
+    if (s < 86400) return Math.floor(s/3600) + 'h';
+    return Math.floor(s/86400) + 'd';
 }
 
 // ── Keyboard shortcuts ──

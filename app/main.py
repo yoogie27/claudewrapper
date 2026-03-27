@@ -558,6 +558,61 @@ async def diagnose_repo(project_id: str) -> Any:
     return {"project": project["name"], "checks": checks}
 
 
+# ── GitHub Actions Status API ──
+
+@app.get("/api/projects/{project_id}/actions")
+async def get_actions_status(project_id: str) -> Any:
+    """Get recent GitHub Actions workflow runs for a project."""
+    project = db.get_project(project_id)
+    if not project:
+        return JSONResponse({"error": "Not found"}, 404)
+    if not settings.github_token:
+        return {"runs": [], "error": "No GitHub token configured"}
+
+    from app.git_worktree import parse_github_remote
+    repo_path = Path(project["local_path"])
+    if not repo_path.exists():
+        return {"runs": [], "error": "Repo path not found"}
+
+    gh = parse_github_remote(repo_path)
+    if not gh:
+        return {"runs": [], "error": "Not a GitHub repo"}
+
+    owner, repo_name = gh
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo_name}/actions/runs",
+                headers={
+                    "Authorization": f"Bearer {settings.github_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                params={"per_page": 5},
+            )
+            if resp.status_code != 200:
+                return {"runs": [], "error": f"GitHub API {resp.status_code}"}
+
+            data = resp.json()
+            runs = []
+            for r in data.get("workflow_runs", []):
+                runs.append({
+                    "id": r["id"],
+                    "name": r.get("name", ""),
+                    "branch": r.get("head_branch", ""),
+                    "status": r.get("status", ""),          # queued, in_progress, completed
+                    "conclusion": r.get("conclusion", ""),   # success, failure, cancelled, etc.
+                    "url": r.get("html_url", ""),
+                    "created_at": r.get("created_at", ""),
+                    "updated_at": r.get("updated_at", ""),
+                    "commit_msg": (r.get("head_commit") or {}).get("message", "")[:80],
+                })
+            return {"runs": runs, "repo": f"{owner}/{repo_name}"}
+    except Exception as exc:
+        return {"runs": [], "error": str(exc)}
+
+
 # ── Mode Detection API ──
 
 @app.post("/api/detect-mode")
@@ -565,7 +620,7 @@ async def detect_mode_api(request: Request) -> Any:
     data = await request.json()
     text = data.get("text", "")
     mode = detect_mode(text)
-    return {"mode": mode, "label": MODE_LABELS.get(mode, "Feature"), "color": MODE_COLORS.get(mode, "#6366f1")}
+    return {"mode": mode, "label": MODE_LABELS.get(mode, "Feature"), "color": MODE_COLORS.get(mode, "#e11d48")}
 
 
 # ── Entrypoint ──
