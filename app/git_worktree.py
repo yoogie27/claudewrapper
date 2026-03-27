@@ -184,13 +184,21 @@ def parse_github_remote(repo: Path) -> tuple[str, str] | None:
 
 
 def parse_github_url(url: str) -> tuple[str, str] | None:
-    """Parse (owner, repo_name) from a GitHub URL string. Works without filesystem."""
+    """Parse (owner, repo_name) from a GitHub URL string. Works without filesystem.
+    Supports HTTPS, SSH (git@), and ssh:// protocol URLs."""
     if not url:
         return None
-    m = re.match(r"https://github\.com/([^/]+)/([^/]+?)(?:\.git)?$", url.strip())
+    url = url.strip()
+    # HTTPS: https://github.com/owner/repo(.git)
+    m = re.match(r"https://github\.com/([^/]+)/([^/]+?)(?:\.git)?$", url)
     if m:
         return m.group(1), m.group(2)
-    m = re.match(r"git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$", url.strip())
+    # SSH shorthand: git@github.com:owner/repo(.git)
+    m = re.match(r"git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$", url)
+    if m:
+        return m.group(1), m.group(2)
+    # SSH protocol: ssh://git@github.com(:port)/owner/repo(.git)
+    m = re.match(r"ssh://git@github\.com(?::\d+)?/([^/]+)/([^/]+?)(?:\.git)?$", url)
     if m:
         return m.group(1), m.group(2)
     return None

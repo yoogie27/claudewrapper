@@ -206,6 +206,7 @@ function renderProjects() {
 async function selectProject(id) {
     state.currentProject = state.projects.find(p => p.id === id);
     if (!state.currentProject) return;
+    localStorage.setItem('cw-project', id);
     document.getElementById('tasks-project-name').textContent = state.currentProject.name;
     renderProjects();
     await loadTasks();
@@ -397,6 +398,7 @@ async function createTask() {
 async function selectTask(id) {
     state.currentTask = state.tasks.find(t => t.id === id);
     if (!state.currentTask) return;
+    localStorage.setItem('cw-task', id);
     renderTasks();
 
     // Update header
@@ -867,7 +869,19 @@ async function pollActions() {
         const resp = await fetch(`/api/projects/${state.currentProject.id}/actions`);
         if (!resp.ok) { widget.style.display = 'none'; return; }
         const data = await resp.json();
-        if (!data.runs || !data.runs.length) { widget.style.display = 'none'; return; }
+        if (data.error) {
+            // Show widget with error so user knows why it's empty
+            widget.style.display = 'block';
+            document.getElementById('actions-repo').textContent = '';
+            document.getElementById('actions-list').innerHTML = `<div style="font-size:11px;color:var(--text-dim);padding:4px 6px">${esc(data.error)}</div>`;
+            return;
+        }
+        if (!data.runs || !data.runs.length) {
+            widget.style.display = 'block';
+            document.getElementById('actions-repo').textContent = data.repo || '';
+            document.getElementById('actions-list').innerHTML = '<div style="font-size:11px;color:var(--text-dim);padding:4px 6px">No workflow runs</div>';
+            return;
+        }
 
         widget.style.display = 'block';
         document.getElementById('actions-repo').textContent = data.repo || '';
@@ -963,15 +977,30 @@ setInterval(async () => {
 }, 5000);
 
 // ── Init ──
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     renderProjects();
-    // Auto-select first project if exists
-    if (state.projects.length === 1) {
-        selectProject(state.projects[0].id);
+
+    // Restore last selected project and task from localStorage
+    const savedProject = localStorage.getItem('cw-project');
+    const savedTask = localStorage.getItem('cw-task');
+
+    if (savedProject && state.projects.find(p => p.id === savedProject)) {
+        await selectProject(savedProject);
+        if (savedTask) {
+            // selectProject loaded tasks, now try to select the saved task
+            if (state.tasks.find(t => t.id === savedTask)) {
+                await selectTask(savedTask);
+            }
+        }
+    } else if (state.projects.length === 1) {
+        await selectProject(state.projects[0].id);
     }
-    // On mobile, start on projects panel
+
+    // On mobile, show the deepest panel that has content
     if (window.innerWidth <= 768) {
-        showPanel('projects');
+        if (state.currentTask) showPanel('chat');
+        else if (state.currentProject) showPanel('tasks');
+        else showPanel('projects');
     }
 });
 </script>
