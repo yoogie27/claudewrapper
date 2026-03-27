@@ -558,7 +558,7 @@ async def diagnose_repo(project_id: str) -> Any:
     if not project:
         return JSONResponse({"error": "Project not found"}, 404)
 
-    from app.git_worktree import parse_github_remote, get_default_branch, _run, GitWorktreeError
+    from app.git_worktree import parse_github_remote, parse_github_url, get_default_branch, _run, GitWorktreeError
     import asyncio
 
     repo = settings.project_repo_path(project["slug"])
@@ -567,58 +567,63 @@ async def diagnose_repo(project_id: str) -> Any:
     # 1. Path exists
     exists = repo.exists()
     checks.append({"name": "Repository path exists", "ok": exists,
-                    "detail": str(repo) if exists else f"Path not found: {repo}"})
-    if not exists:
-        return {"project": project["name"], "checks": checks}
+                    "detail": str(repo) if exists else f"Path not found: {repo}. Try re-cloning the project."})
 
-    # 2. Is a git repo
-    git_dir = (repo / ".git").exists()
-    checks.append({"name": "Is a git repository", "ok": git_dir,
-                    "detail": "Yes" if git_dir else "No .git directory found"})
-    if not git_dir:
-        return {"project": project["name"], "checks": checks}
+    # Filesystem checks (only if path exists)
+    gh = None
+    if exists:
+        git_dir = (repo / ".git").exists()
+        checks.append({"name": "Is a git repository", "ok": git_dir,
+                        "detail": "Yes" if git_dir else "No .git directory found"})
 
-    # 3. Remote URL
-    try:
-        remote_url = await asyncio.to_thread(_run, ["git", "-C", str(repo), "remote", "get-url", "origin"])
-        checks.append({"name": "Remote 'origin' configured", "ok": True, "detail": remote_url})
-    except GitWorktreeError as e:
-        checks.append({"name": "Remote 'origin' configured", "ok": False, "detail": str(e)})
-        return {"project": project["name"], "checks": checks}
+        if git_dir:
+            # 3. Remote URL
+            try:
+                remote_url = await asyncio.to_thread(_run, ["git", "-C", str(repo), "remote", "get-url", "origin"])
+                checks.append({"name": "Remote 'origin' configured", "ok": True, "detail": remote_url})
+            except GitWorktreeError as e:
+                checks.append({"name": "Remote 'origin' configured", "ok": False, "detail": str(e)})
+                remote_url = ""
 
-    # 4. GitHub remote parsed
-    gh = parse_github_remote(repo)
-    if gh:
-        checks.append({"name": "GitHub remote detected", "ok": True, "detail": f"{gh[0]}/{gh[1]}"})
-    else:
-        checks.append({"name": "GitHub remote detected", "ok": False,
-                        "detail": f"Could not parse GitHub owner/repo from: {remote_url}"})
+            # 4. GitHub remote parsed
+            gh = parse_github_remote(repo)
+            if gh:
+                checks.append({"name": "GitHub remote detected", "ok": True, "detail": f"{gh[0]}/{gh[1]}"})
+            elif remote_url:
+                checks.append({"name": "GitHub remote detected", "ok": False,
+                                "detail": f"Could not parse GitHub owner/repo from: {remote_url}"})
 
-    # 5. Default branch
-    try:
-        default_br = await asyncio.to_thread(get_default_branch, repo)
-        base = project.get("base_branch") or default_br
-        checks.append({"name": "Base branch", "ok": True, "detail": base})
-    except Exception as e:
-        checks.append({"name": "Base branch", "ok": False, "detail": str(e)})
-        base = "main"
+            # 5. Default branch
+            try:
+                default_br = await asyncio.to_thread(get_default_branch, repo)
+                base = project.get("base_branch") or default_br
+                checks.append({"name": "Base branch", "ok": True, "detail": base})
+            except Exception as e:
+                checks.append({"name": "Base branch", "ok": False, "detail": str(e)})
+                base = "main"
 
-    # 6. Fetch from origin
-    ssh_env = orchestrator._get_git_ssh_env()
-    try:
-        await asyncio.to_thread(_run, ["git", "-C", str(repo), "fetch", "origin", base],
-                                None, ssh_env)
-        checks.append({"name": f"Fetch origin/{base}", "ok": True, "detail": "Success"})
-    except GitWorktreeError as e:
-        err = str(e)
-        hint = ""
-        if "permission denied" in err.lower() or "publickey" in err.lower():
-            hint = " — Check SSH keys or switch to HTTPS with a token"
-        elif "could not resolve" in err.lower():
-            hint = " — Network/DNS issue"
-        checks.append({"name": f"Fetch origin/{base}", "ok": False, "detail": err + hint})
+            # 6. Fetch from origin
+            ssh_env = orchestrator._get_git_ssh_env()
+            try:
+                await asyncio.to_thread(_run, ["git", "-C", str(repo), "fetch", "origin", base],
+                                        None, ssh_env)
+                checks.append({"name": f"Fetch origin/{base}", "ok": True, "detail": "Success"})
+            except GitWorktreeError as e:
+                err = str(e)
+                hint = ""
+                if "permission denied" in err.lower() or "publickey" in err.lower():
+                    hint = " — Check SSH keys or switch to HTTPS with a token"
+                elif "could not resolve" in err.lower():
+                    hint = " — Network/DNS issue"
+                checks.append({"name": f"Fetch origin/{base}", "ok": False, "detail": err + hint})
 
-    # 7. GitHub API access (if token + GitHub remote)
+    # Fallback: parse GitHub info from DB URL if filesystem didn't find it
+    if not gh:
+        gh = parse_github_url(project.get("github_repo_url", ""))
+        if gh:
+            checks.append({"name": "GitHub repo (from URL)", "ok": True, "detail": f"{gh[0]}/{gh[1]}"})
+
+    # 7. GitHub API access (works even without local checkout)
     if gh and settings.github_token:
         import httpx
         owner, repo_name = gh
@@ -681,14 +686,16 @@ async def get_actions_status(project_id: str) -> Any:
     if not settings.github_token:
         return {"runs": [], "error": "No GitHub token configured"}
 
-    from app.git_worktree import parse_github_remote
-    repo_path = settings.project_repo_path(project["slug"])
-    if not repo_path.exists():
-        return {"runs": [], "error": "Repo path not found"}
-
-    gh = parse_github_remote(repo_path)
+    # Parse GitHub owner/repo from the stored URL (no filesystem needed)
+    from app.git_worktree import parse_github_url, parse_github_remote
+    gh = parse_github_url(project.get("github_repo_url", ""))
+    # Fallback: try reading from the local git remote
     if not gh:
-        return {"runs": [], "error": "Not a GitHub repo"}
+        repo_path = settings.project_repo_path(project["slug"])
+        if repo_path.exists():
+            gh = parse_github_remote(repo_path)
+    if not gh:
+        return {"runs": [], "error": "No GitHub repo URL configured"}
 
     owner, repo_name = gh
     import httpx

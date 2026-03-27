@@ -180,10 +180,17 @@ def parse_github_remote(repo: Path) -> tuple[str, str] | None:
         url = _run(["git", "-C", str(repo), "remote", "get-url", "origin"])
     except Exception:
         return None
-    m = re.match(r"https://github\.com/([^/]+)/([^/]+?)(?:\.git)?$", url)
+    return parse_github_url(url)
+
+
+def parse_github_url(url: str) -> tuple[str, str] | None:
+    """Parse (owner, repo_name) from a GitHub URL string. Works without filesystem."""
+    if not url:
+        return None
+    m = re.match(r"https://github\.com/([^/]+)/([^/]+?)(?:\.git)?$", url.strip())
     if m:
         return m.group(1), m.group(2)
-    m = re.match(r"git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$", url)
+    m = re.match(r"git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$", url.strip())
     if m:
         return m.group(1), m.group(2)
     return None
