@@ -95,20 +95,17 @@
             <input type="text" id="project-name" placeholder="My Awesome Project">
         </div>
         <div class="form-group">
-            <label>Local Repository Path</label>
-            <input type="text" id="project-path" placeholder="C:\Users\...\my-project">
+            <label>Git Repository URL</label>
+            <input type="text" id="project-github" placeholder="https://github.com/owner/repo or git@github.com:owner/repo.git">
+            <div style="font-size:12px;color:var(--text-dim);margin-top:4px">Will be cloned automatically. Leave empty to start with a blank repo.</div>
         </div>
         <div class="form-group">
             <label>Base Branch</label>
             <input type="text" id="project-branch" placeholder="main" value="main">
         </div>
-        <div class="form-group">
-            <label>GitHub URL (optional)</label>
-            <input type="text" id="project-github" placeholder="https://github.com/owner/repo">
-        </div>
         <div class="modal-actions">
             <button class="btn btn-secondary" onclick="document.getElementById('modal-project').style.display='none'">Cancel</button>
-            <button class="btn btn-primary" onclick="saveProject()">Create Project</button>
+            <button class="btn btn-primary" id="btn-create-project" onclick="saveProject()">Create Project</button>
         </div>
     </div>
 </div>
@@ -166,16 +163,18 @@ function renderProjects() {
         el.innerHTML = '<div class="empty-hint">No projects yet.<br>Click + to add one.</div>';
         return;
     }
-    el.innerHTML = state.projects.map(p => `
+    el.innerHTML = state.projects.map(p => {
+        const hasGit = p.github_repo_url ? `<span class="project-item-git" title="${esc(p.github_repo_url)}">&#128279;</span>` : '';
+        return `
         <div class="project-item ${state.currentProject?.id === p.id ? 'active' : ''}"
              onclick="selectProject('${p.id}')">
-            <div class="project-item-name">${esc(p.name)}</div>
+            <div class="project-item-name">${esc(p.name)} ${hasGit}</div>
             <div class="project-item-meta">
                 <span class="project-item-slug">${esc(p.slug)}</span>
                 <button class="btn-icon project-delete" onclick="event.stopPropagation();deleteProject('${p.id}','${escAttr(p.name)}')" title="Delete project">&times;</button>
             </div>
         </div>
-    `).join('');
+    `}).join('');
 }
 
 async function selectProject(id) {
@@ -194,31 +193,41 @@ function showAddProject() {
 
 async function saveProject() {
     const name = document.getElementById('project-name').value.trim();
-    const local_path = document.getElementById('project-path').value.trim();
     const base_branch = document.getElementById('project-branch').value.trim() || 'main';
     const github_repo_url = document.getElementById('project-github').value.trim();
-    if (!name || !local_path) { toast('Error', 'Name and path required', 'error'); return; }
+    if (!name) { toast('Error', 'Project name is required', 'error'); return; }
 
-    const resp = await fetch('/api/projects', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ name, local_path, base_branch, github_repo_url }),
-    });
-    if (resp.ok) {
-        const project = await resp.json();
-        state.projects.push(project);
-        renderProjects();
-        document.getElementById('modal-project').style.display = 'none';
-        // Clear inputs
-        document.getElementById('project-name').value = '';
-        document.getElementById('project-path').value = '';
-        document.getElementById('project-branch').value = 'main';
-        document.getElementById('project-github').value = '';
-        toast('Created', `Project "${name}" added`, 'success');
-        selectProject(project.id);
-    } else {
-        const err = await resp.json();
-        toast('Error', err.error || 'Failed', 'error');
+    const btn = document.getElementById('btn-create-project');
+    btn.disabled = true;
+    btn.textContent = github_repo_url ? 'Cloning...' : 'Creating...';
+
+    try {
+        const resp = await fetch('/api/projects', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ name, base_branch, github_repo_url }),
+        });
+        if (resp.ok) {
+            const project = await resp.json();
+            state.projects.push(project);
+            renderProjects();
+            document.getElementById('modal-project').style.display = 'none';
+            document.getElementById('project-name').value = '';
+            document.getElementById('project-branch').value = 'main';
+            document.getElementById('project-github').value = '';
+            if (project.clone_error) {
+                toast('Warning', `Project created but clone failed: ${project.clone_error}`, 'error');
+            } else {
+                toast('Created', `Project "${name}" ready`, 'success');
+            }
+            selectProject(project.id);
+        } else {
+            const err = await resp.json();
+            toast('Error', err.error || 'Failed', 'error');
+        }
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create Project';
     }
 }
 

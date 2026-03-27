@@ -44,6 +44,7 @@ ClaudeWrapper is a FastAPI server providing a mobile-first chat interface for ma
 ```
 data/
   app.db                       # SQLite database
+  workspace/<slug>/            # git repos (one per project, auto-created)
   sessions/<identifier>/<run_id>/
     prompt.txt                 # prompt sent to Claude
     stdout.txt                 # streamed live via SSE

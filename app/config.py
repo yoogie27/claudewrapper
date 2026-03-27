@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     claude_prompt_arg: str = Field(default="--prompt", alias="CLAUDE_PROMPT_ARG")
     claude_workdir_mode: str = Field(default="project_path", alias="CLAUDE_WORKDIR_MODE")
 
+    workspace_root: str = Field(default="./data/workspace", alias="WORKSPACE_ROOT")
     use_git_worktrees: bool = Field(default=True, alias="USE_GIT_WORKTREES")
     worktree_root: str = Field(default="./data/worktrees", alias="WORKTREE_ROOT")
 
@@ -34,10 +35,14 @@ class Settings(BaseSettings):
     def data_path(self) -> Path:
         return Path(self.data_dir).resolve()
 
+    def workspace_path(self) -> Path:
+        return Path(self.workspace_root).resolve()
+
     def ensure_dirs(self) -> None:
         base = self.data_path()
         for sub in ["sessions", "logs", "worktrees"]:
             (base / sub).mkdir(parents=True, exist_ok=True)
+        self.workspace_path().mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

@@ -85,20 +85,48 @@ async def list_projects() -> Any:
 async def create_project(request: Request) -> Any:
     data = await request.json()
     name = data.get("name", "").strip()
-    local_path = data.get("local_path", "").strip()
-    if not name or not local_path:
-        return JSONResponse({"error": "Name and local_path are required"}, 400)
+    if not name:
+        return JSONResponse({"error": "Name is required"}, 400)
+
+    github_url = data.get("github_repo_url", "").strip()
 
     # Generate slug
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     if not slug:
         slug = "project"
-    # Ensure unique
     if db.get_project_by_slug(slug):
         i = 2
         while db.get_project_by_slug(f"{slug}-{i}"):
             i += 1
         slug = f"{slug}-{i}"
+
+    # Auto-assign workspace path
+    local_path = str(settings.workspace_path() / slug)
+    repo_path = Path(local_path)
+    repo_path.mkdir(parents=True, exist_ok=True)
+
+    # Clone from GitHub URL if provided and directory is empty
+    clone_error = ""
+    if github_url and not (repo_path / ".git").exists():
+        import subprocess, sys
+        ssh_env = orchestrator._get_git_ssh_env()
+        env = {**__import__('os').environ, **(ssh_env or {})}
+        try:
+            cflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            result = subprocess.run(
+                ["git", "clone", github_url, str(repo_path)],
+                capture_output=True, text=True, timeout=120, env=env, creationflags=cflags,
+            )
+            if result.returncode != 0:
+                clone_error = result.stderr.strip() or result.stdout.strip()
+        except Exception as exc:
+            clone_error = str(exc)
+
+    # Init a bare repo if no git repo exists (no URL or clone failed)
+    if not (repo_path / ".git").exists() and not clone_error:
+        import subprocess, sys
+        cflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        subprocess.run(["git", "init", str(repo_path)], capture_output=True, creationflags=cflags)
 
     project_id = uuid.uuid4().hex
     project = db.create_project(
@@ -108,8 +136,11 @@ async def create_project(request: Request) -> Any:
         local_path=local_path,
         base_branch=data.get("base_branch", "main") or "main",
         default_prompt=data.get("default_prompt", ""),
-        github_repo_url=data.get("github_repo_url", ""),
+        github_repo_url=github_url,
     )
+
+    if clone_error:
+        project["clone_error"] = clone_error
     return project
 
 
@@ -120,7 +151,7 @@ async def update_project(project_id: str, request: Request) -> Any:
     if not project:
         return JSONResponse({"error": "Not found"}, 404)
 
-    allowed = {"name", "local_path", "base_branch", "default_prompt", "github_repo_url"}
+    allowed = {"name", "base_branch", "default_prompt", "github_repo_url"}
     updates = {k: v for k, v in data.items() if k in allowed and v is not None}
     if updates:
         db.update_project(project_id, **updates)
