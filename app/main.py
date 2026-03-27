@@ -48,8 +48,7 @@ templates = Jinja2Templates(directory="app/templates")
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> Any:
     projects = db.list_projects()
-    return templates.TemplateResponse("app.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "app.html", {
         "projects": projects,
         "mode_labels": MODE_LABELS,
         "mode_colors": MODE_COLORS,
@@ -60,8 +59,7 @@ async def index(request: Request) -> Any:
 async def usage_page(request: Request) -> Any:
     usage = db.get_usage_by_project()
     timeline = db.get_usage_over_time(30)
-    return templates.TemplateResponse("usage.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "usage.html", {
         "usage": usage,
         "timeline": timeline,
     })
@@ -70,8 +68,7 @@ async def usage_page(request: Request) -> Any:
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request) -> Any:
     projects = db.list_projects()
-    return templates.TemplateResponse("settings.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "settings.html", {
         "settings": settings,
         "projects": projects,
     })
