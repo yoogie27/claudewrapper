@@ -1,34 +1,9 @@
-"""System health checks and workspace MCP verification."""
+"""System health checks."""
 from __future__ import annotations
 
-import json
-import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
-
-# Claude Code config locations
-_CLAUDE_JSON = Path.home() / ".claude.json"          # `claude mcp add` writes here (projects section)
-_USER_SETTINGS = Path.home() / ".claude" / "settings.json"  # plugins, user-level mcpServers
-
-# MCP servers that should be present in every workspace
-REQUIRED_MCP_SERVERS = {
-    "linear": {
-        "label": "Linear",
-        "description": "Linear project management integration",
-        "install_cmd": ["claude", "mcp", "add", "--transport", "http", "linear", "https://mcp.linear.app/mcp"],
-        "plugin_id": "linear@claude-plugins-official",
-    },
-}
-
-RECOMMENDED_MCP_SERVERS = {
-    "memory": {
-        "label": "Memory",
-        "description": "Persistent memory across sessions",
-        "install_cmd": ["claude", "mcp", "add", "memory", "--", "npx", "-y", "@anthropic/claude-code-memory"],
-    },
-}
 
 
 def get_system_health() -> dict:
@@ -74,13 +49,12 @@ def get_system_health() -> dict:
                 "used_pct": stat.dwMemoryLoad,
             }
         else:
-            # Linux: parse /proc/meminfo
             meminfo: dict[str, int] = {}
             with open("/proc/meminfo") as f:
                 for line in f:
                     parts = line.split()
                     if len(parts) >= 2:
-                        meminfo[parts[0].rstrip(":")] = int(parts[1]) * 1024  # kB → bytes
+                        meminfo[parts[0].rstrip(":")] = int(parts[1]) * 1024
             total = meminfo.get("MemTotal", 0)
             avail = meminfo.get("MemAvailable", meminfo.get("MemFree", 0))
             info["memory"] = {
@@ -92,25 +66,14 @@ def get_system_health() -> dict:
         info["memory"] = None
 
     # Claude Code version
-    info["claude_version"] = _run_version("claude", ["claude", "--version"])
-
-    # Git version
-    info["git_version"] = _run_version("git", ["git", "--version"])
-
-    # Node version
-    info["node_version"] = _run_version("node", ["node", "--version"])
-
-    # Python version
+    info["claude_version"] = _run_version(["claude", "--version"])
+    info["git_version"] = _run_version(["git", "--version"])
     info["python_version"] = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-
-    # API key status
-    info["anthropic_key_set"] = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    info["ssh_key_configured"] = bool(os.environ.get("SSH_KEY_DIR"))
 
     return info
 
 
-def _run_version(name: str, cmd: list[str]) -> str | None:
+def _run_version(cmd: list[str]) -> str | None:
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=10,
@@ -121,149 +84,3 @@ def _run_version(name: str, cmd: list[str]) -> str | None:
     except Exception:
         pass
     return None
-
-
-def check_workspace_mcp(workspace_path: str) -> dict:
-    """Check which MCP servers are configured for a workspace.
-
-    Claude Code stores MCP config in multiple locations:
-    1. `~/.claude.json` projects[path].mcpServers  (`claude mcp add` default, --scope local)
-    2. `.mcp.json` in the project root  (alternative local scope)
-    3. `~/.claude/settings.json` enabledPlugins  (marketplace plugins)
-    """
-    p = Path(workspace_path)
-    # Normalize the path for lookup in ~/.claude.json (uses forward slashes)
-    norm_path = str(p).replace("\\", "/")
-
-    # 1) Project-scoped MCP from ~/.claude.json
-    project_servers: dict[str, dict] = {}
-    if _CLAUDE_JSON.exists():
-        try:
-            cdata = json.loads(_CLAUDE_JSON.read_text(encoding="utf-8"))
-            projects = cdata.get("projects", {})
-            # Try exact match, then case-insensitive
-            proj = projects.get(norm_path) or projects.get(str(p))
-            if not proj:
-                for k, v in projects.items():
-                    if k.replace("\\", "/").lower() == norm_path.lower():
-                        proj = v
-                        break
-            if proj:
-                project_servers = proj.get("mcpServers", {})
-        except Exception:
-            pass
-
-    # 2) Local .mcp.json in project root (rarely used, but supported)
-    local_config = p / ".mcp.json"
-    local_servers: dict[str, dict] = {}
-    if local_config.exists():
-        try:
-            data = json.loads(local_config.read_text(encoding="utf-8"))
-            local_servers = data if isinstance(data, dict) else {}
-        except Exception:
-            pass
-
-    # 3) User-level plugins from ~/.claude/settings.json
-    enabled_plugins: dict[str, bool] = {}
-    if _USER_SETTINGS.exists():
-        try:
-            udata = json.loads(_USER_SETTINGS.read_text(encoding="utf-8"))
-            enabled_plugins = udata.get("enabledPlugins", {})
-        except Exception:
-            pass
-
-    # Merge all known servers
-    all_installed = {**local_servers, **project_servers}
-
-    results: dict[str, dict] = {}
-
-    for key, info in REQUIRED_MCP_SERVERS.items():
-        present = _is_server_present(key, all_installed)
-        plugin_id = info.get("plugin_id", "")
-        if plugin_id and enabled_plugins.get(plugin_id):
-            present = True
-        source = _detect_source(key, project_servers, local_servers, plugin_id, enabled_plugins)
-        results[key] = {
-            "label": info["label"],
-            "description": info["description"],
-            "required": True,
-            "installed": present,
-            "source": source,
-        }
-
-    for key, info in RECOMMENDED_MCP_SERVERS.items():
-        present = _is_server_present(key, all_installed)
-        plugin_id = info.get("plugin_id", "")
-        if plugin_id and enabled_plugins.get(plugin_id):
-            present = True
-        source = _detect_source(key, project_servers, local_servers, plugin_id, enabled_plugins)
-        results[key] = {
-            "label": info["label"],
-            "description": info["description"],
-            "required": False,
-            "installed": present,
-            "source": source,
-        }
-
-    config_exists = bool(project_servers) or local_config.exists()
-    return {
-        "workspace": workspace_path,
-        "config_exists": config_exists,
-        "servers": results,
-        "all_required_ok": all(
-            r["installed"] for r in results.values() if r["required"]
-        ),
-    }
-
-
-def _detect_source(
-    key: str,
-    project_servers: dict,
-    local_servers: dict,
-    plugin_id: str,
-    enabled_plugins: dict,
-) -> str:
-    """Return where a server is configured."""
-    if _is_server_present(key, project_servers):
-        return "project (~/.claude.json)"
-    if _is_server_present(key, local_servers):
-        return "local (.mcp.json)"
-    if plugin_id and enabled_plugins.get(plugin_id):
-        return "plugin"
-    return ""
-
-
-def _is_server_present(key: str, installed: dict) -> bool:
-    """Check if a server key (or close variant) is in the installed dict."""
-    if key in installed:
-        return True
-    # Fuzzy match: "linear-server" matches "linear", etc.
-    for name in installed:
-        if key in name or name in key:
-            return True
-    return False
-
-
-def install_mcp_server(workspace_path: str, server_key: str) -> dict:
-    """Install an MCP server into a workspace via `claude mcp add`."""
-    all_servers = {**REQUIRED_MCP_SERVERS, **RECOMMENDED_MCP_SERVERS}
-    if server_key not in all_servers:
-        return {"ok": False, "error": f"Unknown server: {server_key}"}
-
-    info = all_servers[server_key]
-    cmd = info["install_cmd"]
-
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
-        if result.returncode == 0:
-            return {"ok": True, "output": result.stdout.strip()}
-        return {"ok": False, "error": result.stderr.strip() or result.stdout.strip()}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}

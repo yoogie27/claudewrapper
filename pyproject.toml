@@ -1,7 +1,7 @@
 [project]
 name = "claudewrapper"
 version = "0.1.0"
-description = "Headless Linear + Claude Code orchestration"
+description = "Multi-project task management with Claude Code chat interface"
 requires-python = ">=3.12"
 readme = "README.md"
 dependencies = [

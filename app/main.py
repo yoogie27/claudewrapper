@@ -1,30 +1,26 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
+import re
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-# Configure logging to show INFO messages
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s [%(name)s] %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse, StreamingResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
 from app.db import Database
-from app.health import get_system_health, check_workspace_mcp, install_mcp_server
-from app.linear_client import LinearClient
-from app.orchestrator import Orchestrator, DEFAULT_PROMPT
-from app.ssh import setup_ssh, get_public_key, get_git_ssh_env
-from app.repo_manager import clone_or_fetch, get_clone_status, parse_repo_info
-from app.sanitize import validate_identifier
+from app.orchestrator import Orchestrator
+from app.task_modes import detect_mode, MODE_LABELS, MODE_COLORS
+from app.ssh import setup_ssh
 
 
 db = Database(settings.data_path() / "app.db")
@@ -33,12 +29,10 @@ orchestrator = Orchestrator(settings, db)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize SSH keys if configured
     if settings.ssh_key_dir:
         try:
             setup_ssh(Path(settings.ssh_key_dir))
         except Exception as exc:
-            import logging
             logging.getLogger("claudewrapper").warning("SSH setup failed: %s", exc)
     await orchestrator.start()
     yield
@@ -49,585 +43,272 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
 
+# ── HTML Pages ──
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> Any:
-    jobs = db.list_jobs(50)
-    sessions = db.list_sessions(50)
-    mappings = db.list_team_mappings()
-    last_poll = db.get_config("last_poll")
-    # Build identifier -> title lookup from issue_state
-    identifiers = {s["identifier"] for s in sessions} | {j["identifier"] for j in jobs}
-    titles = {}
-    for ident in identifiers:
-        row = db.get_issue_by_identifier(ident)
-        if row and row["last_title"]:
-            titles[ident] = row["last_title"]
-    queue_paused = orchestrator.is_queue_paused()
-    queue_paused_reason = db.get_config("queue_paused_reason") or ""
-    return templates.TemplateResponse(
-        "index.html",
-        {
-            "request": request,
-            "jobs": jobs,
-            "sessions": sessions,
-            "mappings": mappings,
-            "last_poll": last_poll,
-            "settings": settings,
-            "titles": titles,
-            "active": "dashboard",
-            "queue_paused": queue_paused,
-            "queue_paused_reason": queue_paused_reason,
-        },
-    )
+    projects = db.list_projects()
+    return templates.TemplateResponse("app.html", {
+        "request": request,
+        "projects": projects,
+        "mode_labels": MODE_LABELS,
+        "mode_colors": MODE_COLORS,
+    })
 
 
-@app.get("/teams", response_class=HTMLResponse)
-async def teams(request: Request) -> Any:
-    async with LinearClient(settings.linear_api_key) as client:
-        try:
-            teams = await client.get_teams()
-        except Exception as exc:
-            teams = []
-            error = str(exc)
-        else:
-            error = None
-
-    mappings = {m["team_id"]: m for m in db.list_team_mappings()}
-    root_dirs = [r for r in settings.repo_root_paths() if r.exists()]
-
-    # Build per-team label instructions map
-    all_instructions = db.list_label_instructions()
-    label_map: dict[str, list] = {}
-    for row in all_instructions:
-        label_map.setdefault(row["team_id"], []).append(row)
-
-    # Build paused state map for each team
-    paused_teams: dict[str, bool] = {}
-    for t in teams:
-        paused_teams[t["id"]] = db.is_team_paused(t["id"])
-
-    return templates.TemplateResponse(
-        "teams.html",
-        {
-            "request": request,
-            "teams": teams,
-            "mappings": mappings,
-            "error": error,
-            "root_dirs": root_dirs,
-            "label_map": label_map,
-            "paused_teams": paused_teams,
-            "active": "teams",
-            "default_prompt": DEFAULT_PROMPT,
-        },
-    )
-
-
-@app.post("/api/mapping")
-async def set_mapping(
-    team_id: str = Form(...),
-    team_name: str = Form(...),
-    local_path: str = Form(""),
-    default_prompt: str = Form(""),
-    enabled: int = Form(0),
-    auto_process: int = Form(0),
-    auto_merge: int = Form(0),
-    github_repo_url: str = Form(""),
-    base_branch: str = Form(""),
-) -> Any:
-    github_repo_url = github_repo_url.strip()
-    base_branch = base_branch.strip()
-
-    # If a GitHub URL is provided and local_path is empty, or repos_dir is configured, trigger auto-clone
-    if github_repo_url and (not local_path or settings.repos_dir):
-        # Use configured REPOS_DIR if set, else fall back to DATA_DIR/repos
-        repos_dir = Path(settings.repos_dir) if settings.repos_dir else settings.data_path() / "repos"
-        ssh_env = _get_ssh_env()
-        db.upsert_team_mapping(
-            team_id, team_name, local_path, default_prompt,
-            bool(int(enabled)), auto_process=bool(auto_process),
-            auto_merge=bool(auto_merge), github_repo_url=github_repo_url,
-            base_branch=base_branch,
-        )
-        db.update_clone_status(team_id, "cloning")
-
-        async def _do_clone():
-            try:
-                ok, msg, path = await asyncio.to_thread(clone_or_fetch, github_repo_url, repos_dir, ssh_env)
-                if ok and path:
-                    db.update_clone_status(team_id, "cloned", str(path))
-                else:
-                    db.update_clone_status(team_id, f"error: {msg}")
-            except Exception as exc:
-                db.update_clone_status(team_id, f"error: {exc}")
-
-        asyncio.create_task(_do_clone())
-    else:
-        db.upsert_team_mapping(
-            team_id, team_name, local_path, default_prompt,
-            bool(int(enabled)), auto_process=bool(auto_process),
-            auto_merge=bool(auto_merge), github_repo_url=github_repo_url,
-            base_branch=base_branch,
-        )
-    return RedirectResponse(url="/teams", status_code=303)
-
-
-def _get_ssh_env() -> dict[str, str] | None:
-    """Helper to build SSH env from settings."""
-    if not settings.ssh_key_dir:
-        return None
-    key_dir = Path(settings.ssh_key_dir)
-    if (key_dir / "id_ed25519").exists():
-        return get_git_ssh_env(key_dir)
-    return None
-
-
-@app.post("/api/label-instruction")
-async def save_label_instruction(
-    team_id: str = Form(...),
-    label_name: str = Form(...),
-    instruction: str = Form(...),
-) -> Any:
-    db.upsert_label_instruction(team_id, label_name.strip(), instruction.strip())
-    return RedirectResponse(url="/teams", status_code=303)
-
-
-@app.post("/api/label-instruction/delete")
-async def delete_label_instruction(
-    team_id: str = Form(...),
-    label_name: str = Form(...),
-) -> Any:
-    db.delete_label_instruction(team_id, label_name)
-    return RedirectResponse(url="/teams", status_code=303)
-
-
-@app.get("/files", response_class=HTMLResponse)
-async def file_browser(request: Request, path: str | None = None) -> Any:
-    roots = [Path(m["local_path"]).resolve() for m in db.list_team_mappings() if m["enabled"]]
-    roots += [r for r in settings.repo_root_paths() if r.exists()]
-    wt_root = Path(settings.worktree_root).resolve()
-    if wt_root.exists() and wt_root not in roots:
-        roots.append(wt_root)
-    roots = [r for r in roots if r.exists()]
-
-    if not path:
-        return templates.TemplateResponse(
-            "files.html",
-            {"request": request, "entries": [], "path": "", "roots": roots, "parent_path": None, "active": "files"},
-        )
-
-    p = Path(path).resolve()
-    def _allowed(target: Path, root: Path) -> bool:
-        try:
-            return target.is_relative_to(root)
-        except Exception:
-            return False
-
-    if not any(_allowed(p, r) for r in roots):
-        return PlainTextResponse("Path not allowed", status_code=403)
-
-    if p.is_file():
-        try:
-            content = p.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            content = "(binary or unreadable)"
-        return templates.TemplateResponse(
-            "files.html",
-            {"request": request, "entries": [], "path": str(p), "roots": roots, "file_content": content, "parent_path": str(p.parent), "active": "files"},
-        )
-
-    entries = []
-    for child in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-        entries.append({"name": child.name, "path": str(child), "is_dir": child.is_dir()})
-
-    return templates.TemplateResponse(
-        "files.html",
-        {"request": request, "entries": entries, "path": str(p), "roots": roots, "parent_path": str(p.parent), "active": "files"},
-    )
-
-
-@app.get("/api/status")
-async def status() -> Any:
-    jobs = [dict(r) for r in db.list_jobs(50)]
-    sessions = [dict(r) for r in db.list_sessions(50)]
-    mappings = [dict(r) for r in db.list_team_mappings()]
-    # Build identifier -> title lookup
-    identifiers = {s["identifier"] for s in sessions} | {j["identifier"] for j in jobs}
-    titles = {}
-    for ident in identifiers:
-        row = db.get_issue_by_identifier(ident)
-        if row and row["last_title"]:
-            titles[ident] = row["last_title"]
-    return JSONResponse(
-        {
-            "jobs": jobs,
-            "sessions": sessions,
-            "mappings": mappings,
-            "titles": titles,
-            "last_poll": db.get_config("last_poll"),
-            "test_mode": settings.test_mode,
-            "queue_paused": orchestrator.is_queue_paused(),
-            "queue_paused_reason": db.get_config("queue_paused_reason") or "",
-            "status_mapping": {
-                "hitl": db.get_config("status_hitl") or settings.hitl_state_name,
-                "review": db.get_config("status_review") or settings.review_state_name,
-                "done": db.get_config("status_done") or settings.done_state_name,
-                "error": db.get_config("status_error") or settings.error_state_name,
-            },
-        }
-    )
-
-
-@app.get("/api/health")
-async def api_health() -> Any:
-    """System health metrics — polled by the dashboard."""
-    health = await asyncio.to_thread(get_system_health)
-    return JSONResponse(health)
-
-
-@app.get("/api/ssh/public-key")
-async def api_ssh_public_key() -> Any:
-    """Return the SSH public key for display in the UI."""
-    if not settings.ssh_key_dir:
-        return JSONResponse({"error": "SSH_KEY_DIR not configured"}, status_code=404)
-    key = get_public_key(Path(settings.ssh_key_dir))
-    if not key:
-        return JSONResponse({"error": "No SSH key generated yet"}, status_code=404)
-    return JSONResponse({"public_key": key})
-
-
-@app.get("/api/repo/status")
-async def api_repo_status(team_id: str) -> Any:
-    """Check clone status for a team's GitHub repo."""
-    mapping = db.get_team_mapping(team_id)
-    if not mapping or not mapping["github_repo_url"]:
-        return JSONResponse({"status": "not_configured", "message": "No GitHub repo URL configured"})
-    if not settings.repos_dir:
-        return JSONResponse({"status": "error", "message": "REPOS_DIR not configured"})
-    status = get_clone_status(Path(settings.repos_dir), mapping["github_repo_url"])
-    status["clone_status"] = mapping["clone_status"] or ""
-    return JSONResponse(status)
-
-
-@app.post("/api/repo/clone")
-async def api_repo_clone(team_id: str = Form(...)) -> Any:
-    """Trigger a clone/fetch for a team's GitHub repo."""
-    mapping = db.get_team_mapping(team_id)
-    if not mapping or not mapping["github_repo_url"]:
-        return JSONResponse({"ok": False, "error": "No GitHub repo URL configured"}, status_code=400)
-
-    # Use configured REPOS_DIR if set, else fall back to DATA_DIR/repos
-    repos_dir = Path(settings.repos_dir) if settings.repos_dir else settings.data_path() / "repos"
-    ssh_env = _get_ssh_env()
-    db.update_clone_status(team_id, "cloning")
-
-    async def _do_clone():
-        try:
-            ok, msg, path = await asyncio.to_thread(clone_or_fetch, mapping["github_repo_url"], repos_dir, ssh_env)
-            if ok and path:
-                db.update_clone_status(team_id, "cloned", str(path))
-            else:
-                db.update_clone_status(team_id, f"error: {msg}")
-        except Exception as exc:
-            db.update_clone_status(team_id, f"error: {exc}")
-
-    asyncio.create_task(_do_clone())
-    return JSONResponse({"ok": True, "message": "Clone started"})
-
-
-@app.get("/api/workspace/check")
-async def api_workspace_check(path: str) -> Any:
-    """Check MCP server status for a workspace."""
-    result = await asyncio.to_thread(check_workspace_mcp, path)
-    return JSONResponse(result)
-
-
-@app.post("/api/workspace/install-mcp")
-async def api_install_mcp(
-    path: str = Form(...),
-    server: str = Form(...),
-) -> Any:
-    """Install an MCP server into a workspace."""
-    result = await asyncio.to_thread(install_mcp_server, path, server)
-    return JSONResponse(result)
+@app.get("/usage", response_class=HTMLResponse)
+async def usage_page(request: Request) -> Any:
+    usage = db.get_usage_by_project()
+    timeline = db.get_usage_over_time(30)
+    return templates.TemplateResponse("usage.html", {
+        "request": request,
+        "usage": usage,
+        "timeline": timeline,
+    })
 
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request) -> Any:
-    values = {
-        "hitl": db.get_config("status_hitl") or settings.hitl_state_name,
-        "review": db.get_config("status_review") or settings.review_state_name,
-        "done": db.get_config("status_done") or settings.done_state_name,
-        "error": db.get_config("status_error") or settings.error_state_name,
-    }
-    # Fetch available states from the first enabled team for reference
-    available_states: list[dict] = []
-    enabled_mappings = [m for m in db.list_team_mappings() if m["enabled"]]
-    if enabled_mappings and settings.linear_api_key:
-        try:
-            async with LinearClient(settings.linear_api_key) as client:
-                available_states = await client.get_workflow_states(enabled_mappings[0]["team_id"])
-        except Exception:
-            pass
+    projects = db.list_projects()
     return templates.TemplateResponse("settings.html", {
         "request": request,
-        "values": values,
-        "available_states": available_states,
-        "active": "settings",
         "settings": settings,
+        "projects": projects,
     })
 
 
-@app.post("/api/settings")
-async def update_settings(
-    status_hitl: str = Form(""),
-    status_review: str = Form(""),
-    status_done: str = Form(""),
-    status_error: str = Form(""),
-) -> Any:
-    db.set_config("status_hitl", status_hitl.strip())
-    db.set_config("status_review", status_review.strip())
-    db.set_config("status_done", status_done.strip())
-    db.set_config("status_error", status_error.strip())
-    return RedirectResponse(url="/settings", status_code=303)
+# ── Project API ──
+
+@app.get("/api/projects")
+async def list_projects() -> Any:
+    return db.list_projects()
 
 
-@app.post("/api/team/start-all")
-async def api_team_start_all(team_id: str = Form(...)) -> Any:
-    """Enqueue all open tickets for a team."""
-    await orchestrator.enqueue_team_tickets(team_id)
-    return RedirectResponse("/teams", status_code=303)
+@app.post("/api/projects")
+async def create_project(request: Request) -> Any:
+    data = await request.json()
+    name = data.get("name", "").strip()
+    local_path = data.get("local_path", "").strip()
+    if not name or not local_path:
+        return JSONResponse({"error": "Name and local_path are required"}, 400)
 
+    # Generate slug
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    if not slug:
+        slug = "project"
+    # Ensure unique
+    if db.get_project_by_slug(slug):
+        i = 2
+        while db.get_project_by_slug(f"{slug}-{i}"):
+            i += 1
+        slug = f"{slug}-{i}"
 
-@app.post("/api/team/pause")
-async def api_team_pause(team_id: str = Form(...)) -> Any:
-    """Pause/resume processing for a team."""
-    currently_paused = db.is_team_paused(team_id)
-    db.set_team_paused(team_id, not currently_paused)
-    return RedirectResponse("/teams", status_code=303)
-
-
-@app.post("/api/poll-now")
-async def poll_now() -> Any:
-    """Trigger an immediate Linear poll."""
-    try:
-        found = await orchestrator.poll_now()
-        return JSONResponse({"ok": True, "found": found})
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-
-
-@app.post("/api/queue/pause")
-async def queue_pause() -> Any:
-    """Pause the global job queue."""
-    orchestrator.set_queue_paused(True, "Manual pause via dashboard")
-    return JSONResponse({"ok": True, "paused": True})
-
-
-@app.post("/api/queue/resume")
-async def queue_resume() -> Any:
-    """Resume the global job queue."""
-    orchestrator.set_queue_paused(False)
-    return JSONResponse({"ok": True, "paused": False})
-
-
-@app.post("/api/cancel")
-async def cancel_job(request: Request, job_id: int = Form(...)) -> Any:
-    sent = orchestrator.cancel_job(job_id)
-    if not sent:
-        # Process not found — job may have died without updating the DB.
-        # Force-mark it as failed so it stops showing as running.
-        db.update_job_status(job_id, "failed")
-        db._conn.execute(
-            "UPDATE sessions SET status='failed', ended_at=datetime('now'), last_activity_at=datetime('now') WHERE run_id=?",
-            (job_id,),
-        )
-        db._conn.commit()
-    referer = request.headers.get("referer", "/")
-    return RedirectResponse(url=referer, status_code=303)
-
-
-@app.post("/api/merge")
-async def merge_pr(request: Request, run_id: int = Form(...)) -> Any:
-    ok, msg = await orchestrator.merge_session_pr(run_id)
-    # If the request came from a form (not fetch), redirect back
-    accept = request.headers.get("accept", "")
-    if "application/json" in accept:
-        status_code = 200 if ok else 400
-        return JSONResponse({"ok": ok, "message": msg}, status_code=status_code)
-    if not ok:
-        # Redirect back with error as query param so the UI can show a toast
-        referer = request.headers.get("referer", "/")
-        sep = "&" if "?" in referer else "?"
-        return RedirectResponse(url=f"{referer}{sep}error={msg}", status_code=303)
-    referer = request.headers.get("referer", "/")
-    return RedirectResponse(url=referer, status_code=303)
-
-
-@app.post("/api/retry")
-async def retry_ticket(identifier: str = Form(...)) -> Any:
-    logger = logging.getLogger(__name__)
-    logger.info("=== RETRY REQUESTED: %s ===", identifier)
-    try:
-        issue = db.get_issue_by_identifier(identifier)
-        if not issue:
-            logger.warning("Issue not found: %s", identifier)
-            return PlainTextResponse("Unknown ticket", status_code=404)
-        logger.info("Issue found: id=%s, team=%s", issue["issue_id"], issue["team_id"])
-        db.enqueue_job(issue["issue_id"], issue["identifier"], issue["team_id"], "retry", force=True)
-        logger.info("=== RETRY JOB ENQUEUED ===")
-        return RedirectResponse(url="/", status_code=303)
-    except Exception as exc:
-        logger.exception("=== RETRY FAILED: %s ===", exc)
-        raise
-
-
-@app.post("/api/retry-job")
-async def retry_job(identifier: str = Form(...)) -> Any:
-    logger = logging.getLogger(__name__)
-    logger.info("=== RETRY-JOB REQUESTED: %s ===", identifier)
-    try:
-        issue = db.get_issue_by_identifier(identifier)
-        if not issue:
-            logger.warning("Issue not found: %s", identifier)
-            return PlainTextResponse("Unknown ticket", status_code=404)
-        logger.info("Issue found: id=%s, team=%s", issue["issue_id"], issue["team_id"])
-        db.enqueue_job(issue["issue_id"], issue["identifier"], issue["team_id"], "retry_job", force=True)
-        logger.info("=== RETRY-JOB ENQUEUED ===")
-        return RedirectResponse(url="/", status_code=303)
-    except Exception as exc:
-        logger.exception("=== RETRY-JOB FAILED: %s ===", exc)
-        raise
-
-
-@app.post("/api/reprocess")
-async def reprocess_session(request: Request, identifier: str = Form(...)) -> Any:
-    """Re-run post-processing (comment, state, PR) without re-running Claude."""
-    ok, msg = await orchestrator.reprocess_session(identifier)
-    if not ok:
-        return PlainTextResponse(msg, status_code=400)
-    referer = request.headers.get("referer", "/")
-    return RedirectResponse(url=referer, status_code=303)
-
-
-@app.post("/api/cleanup")
-async def cleanup_session(request: Request, identifier: str = Form(...)) -> Any:
-    """Remove worktree, session files, and DB row for a ticket."""
-    ok, msg = orchestrator.cleanup_session(identifier)
-    # Check if the request came from a form (not fetch)
-    accept = request.headers.get("accept", "")
-    if "application/json" in accept:
-        status_code = 200 if ok else 400
-        return JSONResponse({"ok": ok, "message": msg}, status_code=status_code)
-    if not ok:
-        return PlainTextResponse(msg, status_code=400)
-    referer = request.headers.get("referer", "/")
-    return RedirectResponse(url=referer, status_code=303)
-
-
-@app.post("/api/trigger")
-async def trigger_ticket(
-    identifier: str = Form(""),
-    issue_id: str = Form(""),
-    team_id: str = Form(""),
-) -> Any:
-    if issue_id and team_id and identifier:
-        try:
-            identifier = validate_identifier(identifier)
-        except ValueError:
-            return PlainTextResponse("Invalid identifier format", status_code=400)
-        db.enqueue_job(issue_id, identifier, team_id, "manual_trigger")
-        return RedirectResponse(url="/", status_code=303)
-    return PlainTextResponse("Provide identifier, issue_id and team_id", status_code=400)
-
-
-@app.post("/api/lookup")
-async def lookup_identifier(identifier: str = Form(...)) -> Any:
-    async with LinearClient(settings.linear_api_key) as client:
-        try:
-            issue = await client.get_issue_by_identifier(identifier)
-        except Exception as exc:
-            return PlainTextResponse(f"Lookup failed: {exc}", status_code=400)
-    return JSONResponse(
-        {
-            "identifier": issue["identifier"],
-            "issue_id": issue["id"],
-            "team_id": issue["team"]["id"],
-            "team_name": issue["team"]["name"],
-            "title": issue["title"],
-        }
+    project_id = uuid.uuid4().hex
+    project = db.create_project(
+        id=project_id,
+        name=name,
+        slug=slug,
+        local_path=local_path,
+        base_branch=data.get("base_branch", "main") or "main",
+        default_prompt=data.get("default_prompt", ""),
+        github_repo_url=data.get("github_repo_url", ""),
     )
+    return project
 
 
-@app.get("/sessions/{identifier}/prompt", response_class=HTMLResponse)
-async def session_prompt(request: Request, identifier: str) -> Any:
-    session = db.get_latest_session_by_identifier(identifier)
-    if not session:
-        return PlainTextResponse("Session not found", status_code=404)
-    prompt_path = Path(session["session_dir"]) / "prompt.txt"
-    if not prompt_path.exists():
-        return PlainTextResponse("Prompt not found", status_code=404)
-    content = prompt_path.read_text(encoding="utf-8", errors="replace")
-    return templates.TemplateResponse(
-        "prompt.html",
-        {"request": request, "identifier": identifier, "content": content},
+@app.put("/api/projects/{project_id}")
+async def update_project(project_id: str, request: Request) -> Any:
+    data = await request.json()
+    project = db.get_project(project_id)
+    if not project:
+        return JSONResponse({"error": "Not found"}, 404)
+
+    allowed = {"name", "local_path", "base_branch", "default_prompt", "github_repo_url"}
+    updates = {k: v for k, v in data.items() if k in allowed and v is not None}
+    if updates:
+        db.update_project(project_id, **updates)
+    return db.get_project(project_id)
+
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str) -> Any:
+    project = db.get_project(project_id)
+    if not project:
+        return JSONResponse({"error": "Not found"}, 404)
+    db.delete_project(project_id)
+    return {"ok": True}
+
+
+# ── Task API ──
+
+@app.get("/api/projects/{project_id}/tasks")
+async def list_tasks(project_id: str, status: str | None = None) -> Any:
+    tasks = db.list_tasks(project_id, status)
+    # Attach cost info per task
+    for t in tasks:
+        usage = db.get_usage_for_task(t["id"])
+        t["total_cost_usd"] = usage["total_cost_usd"]
+        t["run_count"] = usage["run_count"]
+    return tasks
+
+
+@app.post("/api/projects/{project_id}/tasks")
+async def create_task(project_id: str, request: Request) -> Any:
+    project = db.get_project(project_id)
+    if not project:
+        return JSONResponse({"error": "Project not found"}, 404)
+
+    data = await request.json()
+    title = data.get("title", "").strip()
+    if not title:
+        return JSONResponse({"error": "Title is required"}, 400)
+
+    description = data.get("description", "").strip()
+    mode = data.get("mode", "").strip()
+    if not mode:
+        mode = detect_mode(title + " " + description)
+    priority = data.get("priority", "medium").strip()
+
+    # Generate identifier
+    num = db.next_task_number(project_id)
+    identifier = f"{project['slug']}-{num:03d}"
+    branch_name = f"ticket/{identifier}"
+
+    task_id = uuid.uuid4().hex
+    task = db.create_task(
+        id=task_id,
+        project_id=project_id,
+        title=title,
+        description=description,
+        mode=mode,
+        priority=priority,
+        identifier=identifier,
+        branch_name=branch_name,
     )
+    return task
 
 
-@app.get("/sessions/{identifier}/log", response_class=HTMLResponse)
-async def session_log(request: Request, identifier: str) -> Any:
-    session = db.get_latest_session_by_identifier(identifier)
-    if not session:
-        return PlainTextResponse("Session not found", status_code=404)
-    stdout_path = Path(session["session_dir"]) / "stdout.txt"
-    stderr_path = Path(session["session_dir"]) / "stderr.txt"
-    existing = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
-    stderr_content = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
-    pr_url = session["pr_url"] or ""
-    return templates.TemplateResponse(
-        "log.html",
-        {
-            "request": request,
-            "identifier": identifier,
-            "status": session["status"],
-            "existing": existing,
-            "stderr_content": stderr_content,
-            "job_id": session["run_id"],
-            "pr_url": pr_url,
-        },
-    )
+@app.put("/api/tasks/{task_id}")
+async def update_task(task_id: str, request: Request) -> Any:
+    data = await request.json()
+    task = db.get_task(task_id)
+    if not task:
+        return JSONResponse({"error": "Not found"}, 404)
+
+    allowed = {"title", "description", "mode", "priority", "status"}
+    updates = {k: v for k, v in data.items() if k in allowed and v is not None}
+    if updates:
+        db.update_task(task_id, **updates)
+    return db.get_task(task_id)
 
 
-@app.get("/sessions/{identifier}/log/stream")
-async def stream_log(identifier: str) -> Any:
-    session = db.get_latest_session_by_identifier(identifier)
-    if not session:
-        return PlainTextResponse("Session not found", status_code=404)
+@app.delete("/api/tasks/{task_id}")
+async def delete_task(task_id: str) -> Any:
+    task = db.get_task(task_id)
+    if not task:
+        return JSONResponse({"error": "Not found"}, 404)
+    orchestrator.cleanup_task(task_id)
+    db.delete_task(task_id)
+    return {"ok": True}
 
-    stdout_path = Path(session["session_dir"]) / "stdout.txt"
+
+# ── Messages & Chat API ──
+
+@app.get("/api/tasks/{task_id}/messages")
+async def list_messages(task_id: str) -> Any:
+    return db.list_messages(task_id)
+
+
+@app.post("/api/tasks/{task_id}/messages")
+async def send_message(task_id: str, request: Request) -> Any:
+    data = await request.json()
+    content = data.get("content", "").strip()
+    if not content:
+        return JSONResponse({"error": "Content is required"}, 400)
+
+    task = db.get_task(task_id)
+    if not task:
+        return JSONResponse({"error": "Task not found"}, 404)
+
+    run = await orchestrator.enqueue_message(task_id, content)
+    return {"ok": True, "run_id": run["id"], "task_id": task_id}
+
+
+def _parse_sse_line(line: str):
+    """Parse a single stream-json line into SSE events. Yields (event, data) tuples."""
+    line = line.strip()
+    if not line:
+        return
+    try:
+        obj = json.loads(line)
+        msg_type = obj.get("type", "")
+        if msg_type == "assistant":
+            content_blocks = (obj.get("message") or {}).get("content", [])
+            for block in (content_blocks if isinstance(content_blocks, list) else []):
+                if block.get("type") == "text":
+                    yield "text", {"text": block["text"]}
+                elif block.get("type") == "tool_use":
+                    # Send only key hints, not the full input (can be huge)
+                    inp = block.get("input", {})
+                    hint = {}
+                    for k in ("command", "file_path", "pattern", "query", "content", "old_string"):
+                        if k in inp:
+                            v = str(inp[k])
+                            hint[k] = v[:200] if len(v) > 200 else v
+                            break
+                    yield "tool", {"tool": block.get("name", ""), "input": hint}
+        elif msg_type == "result":
+            yield "result", {"cost_usd": obj.get("total_cost_usd", 0), "usage": obj.get("usage", {})}
+    except (json.JSONDecodeError, ValueError):
+        pass  # Skip unparseable lines (partial JSON, system messages, etc.)
+
+
+@app.get("/api/tasks/{task_id}/stream")
+async def stream_task(task_id: str) -> Any:
+    """SSE endpoint for live Claude output on a task's latest run."""
+    run = db.get_latest_run(task_id)
+    if not run:
+        return PlainTextResponse("No runs found", status_code=404)
+
+    run_id = run["id"]
 
     async def generate():
         pos = 0
+        line_buffer = ""
         while True:
-            if stdout_path.exists():
-                try:
-                    content = stdout_path.read_text(encoding="utf-8", errors="replace")
-                    if len(content) > pos:
-                        chunk = content[pos:]
-                        pos = len(content)
-                        yield f"data: {json.dumps(chunk)}\n\n"
-                except Exception:
-                    pass
+            current_run = db.get_run(run_id)
+            if not current_run:
+                yield "event: done\ndata: {}\n\n"
+                return
 
-            current = db.get_latest_session_by_identifier(identifier)
-            if not current or current["status"] not in ("running",):
-                # Flush any final content
+            session_dir = current_run.get("session_dir")
+            if session_dir:
+                stdout_path = Path(session_dir) / "stdout.txt"
                 if stdout_path.exists():
                     try:
-                        content = stdout_path.read_text(encoding="utf-8", errors="replace")
-                        if len(content) > pos:
-                            yield f"data: {json.dumps(content[pos:])}\n\n"
+                        raw = stdout_path.read_text(encoding="utf-8", errors="replace")
+                        if len(raw) > pos:
+                            chunk = raw[pos:]
+                            pos = len(raw)
+                            # Only process complete lines (avoid partial JSON)
+                            chunk = line_buffer + chunk
+                            if chunk.endswith("\n"):
+                                lines = chunk.splitlines()
+                                line_buffer = ""
+                            else:
+                                lines = chunk.splitlines()
+                                line_buffer = lines.pop() if lines else chunk
+                            for ln in lines:
+                                for event, data in _parse_sse_line(ln):
+                                    yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
                     except Exception:
                         pass
+
+            if current_run["status"] not in ("pending", "running"):
+                # Flush remaining buffer
+                if line_buffer.strip():
+                    for event, data in _parse_sse_line(line_buffer):
+                        yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
                 yield "event: done\ndata: {}\n\n"
                 return
 
@@ -640,261 +321,235 @@ async def stream_log(identifier: str) -> Any:
     )
 
 
-@app.get("/tickets", response_class=HTMLResponse)
-async def tickets_page(request: Request) -> Any:
-    mappings = [m for m in db.list_team_mappings() if m["enabled"]]
-    return templates.TemplateResponse(
-        "tickets.html",
-        {"request": request, "mappings": mappings, "active": "tickets"},
-    )
+# ── Run Control ──
+
+@app.post("/api/tasks/{task_id}/cancel")
+async def cancel_task_run(task_id: str) -> Any:
+    run = db.get_latest_run(task_id)
+    if not run or run["status"] != "running":
+        return JSONResponse({"error": "No running job to cancel"}, 400)
+    ok = orchestrator.cancel_run(run["id"])
+    return {"ok": ok}
 
 
-@app.get("/api/tickets")
-async def api_tickets(team_id: str, status: str = "open") -> Any:
-    """Fetch tickets for a team. status: open|active|backlog|closed|all"""
-    state_map = {
-        "open": ["started", "unstarted", "backlog", "triage"],
-        "active": ["started", "unstarted"],
-        "backlog": ["backlog", "triage"],
-        "closed": ["completed", "canceled"],
-        "all": None,
+@app.get("/api/tasks/{task_id}/runs")
+async def list_runs(task_id: str) -> Any:
+    return db.list_runs(task_id)
+
+
+# ── Usage API ──
+
+@app.get("/api/usage")
+async def get_usage() -> Any:
+    by_project = db.get_usage_by_project()
+    over_time = db.get_usage_over_time(30)
+    total_cost = sum(p["total_cost_usd"] for p in by_project)
+    total_runs = sum(p["run_count"] for p in by_project)
+    return {
+        "total_cost_usd": total_cost,
+        "total_runs": total_runs,
+        "by_project": by_project,
+        "over_time": over_time,
     }
-    state_types = state_map.get(status)
-    async with LinearClient(settings.linear_api_key) as client:
-        try:
-            issues = await client.get_team_issues(team_id, state_types=state_types, first=80)
-        except Exception as exc:
-            return JSONResponse({"error": str(exc)}, status_code=500)
-    return JSONResponse({"issues": issues})
 
 
-@app.get("/api/ticket/{issue_id}")
-async def api_ticket_detail(issue_id: str) -> Any:
-    """Fetch full ticket details including comments."""
-    async with LinearClient(settings.linear_api_key) as client:
-        try:
-            issue = await client.get_issue_details(issue_id)
-        except Exception as exc:
-            return JSONResponse({"error": str(exc)}, status_code=500)
-    # Check if we have a local session for this ticket
-    session = db.get_session(issue_id)
-    return JSONResponse({
-        "issue": issue,
-        "session": dict(session) if session else None,
-    })
+# ── Queue Control ──
+
+@app.get("/api/queue")
+async def queue_status() -> Any:
+    paused = db.get_config("queue_paused") == "1"
+    return {"paused": paused}
 
 
-@app.get("/api/search")
-async def api_search(q: str) -> Any:
-    """Search issues across all teams."""
-    async with LinearClient(settings.linear_api_key) as client:
-        try:
-            results = await client.search_issues(q, first=30)
-        except Exception as exc:
-            return JSONResponse({"error": str(exc)}, status_code=500)
-    return JSONResponse({"issues": results})
+@app.post("/api/queue/pause")
+async def pause_queue() -> Any:
+    db.set_config("queue_paused", "1")
+    return {"ok": True}
 
 
-@app.post("/api/run")
-async def run_ticket(
-    issue_id: str = Form(...),
-    identifier: str = Form(...),
-    team_id: str = Form(...),
-) -> Any:
-    """Enqueue a Claude run for a ticket (from the ticket browser)."""
-    # Ensure issue state is tracked
-    db.upsert_issue_state(
-        issue_id=issue_id,
-        identifier=identifier,
-        team_id=team_id,
-        state_type="started",
-        state_name="In Progress",
-        last_comment_at=None,
-        last_seen_at="",
-        last_updated_at="",
-        title=identifier,
-    )
-    db.enqueue_job(issue_id, identifier, team_id, "manual_run")
-    return JSONResponse({"ok": True, "message": f"Queued {identifier}"})
+@app.post("/api/queue/resume")
+async def resume_queue() -> Any:
+    db.delete_config("queue_paused")
+    return {"ok": True}
 
 
-@app.get("/api/preview")
-async def preview_prompt(issue_id: str) -> Any:
-    async with LinearClient(settings.linear_api_key) as client:
-        issue = await client.get_issue_details(issue_id)
-        mapping = db.get_team_mapping(issue["team"]["id"])
-        if not mapping:
-            return PlainTextResponse("No team mapping for issue team", status_code=400)
-        closed = await client.get_recent_closed_issues(issue["team"]["id"], first=20)
-    label_instructions = db.list_label_instructions(issue["team"]["id"])
-    prompt = orchestrator._build_prompt(issue, closed, mapping["default_prompt"], "preview", label_instructions)
-    return JSONResponse({"prompt": prompt})
+# ── Diagnostics API ──
 
+@app.get("/api/diagnostics/github")
+async def diagnose_github() -> Any:
+    """Validate GitHub token: check auth, scopes, rate limit."""
+    token = settings.github_token
+    if not token:
+        return {"ok": False, "error": "GITHUB_TOKEN not set",
+                "hint": "Set GITHUB_TOKEN in your .env file. See the setup guide on the Settings page."}
 
-@app.get("/picker", response_class=HTMLResponse)
-async def picker(request: Request, team_id: str, team_name: str, path: str | None = None) -> Any:
-    roots = [r for r in settings.repo_root_paths() if r.exists()]
-    if not roots:
-        return PlainTextResponse("No REPO_ROOTS configured", status_code=400)
-
-    def _allowed(target: Path, root: Path) -> bool:
-        try:
-            return target.is_relative_to(root)
-        except Exception:
-            return False
-
-    if not path:
-        entries = [{"name": r.name, "path": str(r), "is_dir": True} for r in roots]
-        return templates.TemplateResponse(
-            "picker.html",
-            {"request": request, "entries": entries, "path": "", "team_id": team_id, "team_name": team_name, "parent_path": None},
-        )
-
-    p = Path(path).resolve()
-    root = next((r for r in roots if _allowed(p, r)), None)
-    if not root:
-        return PlainTextResponse("Path not allowed", status_code=403)
-
-    if not p.is_dir():
-        return PlainTextResponse("Not a directory", status_code=400)
-
-    entries = []
-    ignore = settings.repo_ignore_set()
-    max_depth = settings.repo_max_depth
-    rel_depth = len(p.relative_to(root).parts)
-    if rel_depth > max_depth:
-        return PlainTextResponse("Max depth reached", status_code=400)
-    for child in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-        if child.is_dir() and child.name.lower() not in ignore:
-            entries.append({"name": child.name, "path": str(child), "is_dir": True})
-
-    mapping = db.get_team_mapping(team_id)
-    default_prompt = mapping["default_prompt"] if mapping else DEFAULT_PROMPT
-    enabled = 1 if (mapping and mapping["enabled"]) else 0
-    auto_process = mapping["auto_process"] if mapping else 1
-    auto_merge = mapping["auto_merge"] if mapping else 0
-
-    return templates.TemplateResponse(
-        "picker.html",
-        {
-            "request": request,
-            "entries": entries,
-            "path": str(p),
-            "team_id": team_id,
-            "team_name": team_name,
-            "parent_path": str(p.parent),
-            "default_prompt": default_prompt,
-            "enabled": enabled,
-            "auto_process": auto_process,
-            "auto_merge": auto_merge,
-        },
-    )
-
-
-@app.post("/api/webhook/linear")
-async def linear_webhook(request: Request) -> Any:
-    body = await request.body()
-
-    if settings.linear_webhook_secret:
-        signature = request.headers.get("Linear-Signature", "")
-        expected = hmac.new(
-            settings.linear_webhook_secret.encode(),
-            body,
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(expected, signature):
-            return PlainTextResponse("Invalid signature", status_code=401)
-
+    import httpx
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
     try:
-        payload = json.loads(body)
-    except Exception:
-        return PlainTextResponse("Invalid JSON", status_code=400)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get("https://api.github.com/user", headers=headers)
+            if resp.status_code == 401:
+                return {"ok": False, "error": "Token is invalid or expired (401)",
+                        "hint": "Generate a new token at github.com/settings/tokens"}
+            if resp.status_code == 403:
+                return {"ok": False, "error": "Token forbidden (403) — may be IP-blocked or SSO required",
+                        "hint": "If using a GitHub org with SAML SSO, you must authorize the token for that org."}
+            if resp.status_code != 200:
+                return {"ok": False, "error": f"GitHub API returned {resp.status_code}"}
 
-    action = payload.get("action")
-    event_type = payload.get("type")
-    data = payload.get("data", {})
+            user = resp.json()
+            scopes = resp.headers.get("x-oauth-scopes", "")
+            rate_remaining = resp.headers.get("x-ratelimit-remaining", "?")
 
-    if event_type == "Issue" and action in ("create", "update"):
-        issue_id = data.get("id")
-        identifier = data.get("identifier")
-        team = data.get("team") or {}
-        team_id = team.get("id")
-        state = data.get("state") or {}
-        state_type = state.get("type")
+            # Check required scopes
+            scope_list = [s.strip() for s in scopes.split(",") if s.strip()] if scopes else []
+            has_repo = "repo" in scope_list
+            is_fine_grained = not scopes  # Fine-grained tokens don't return x-oauth-scopes
 
-        if not (issue_id and identifier and team_id):
-            return JSONResponse({"ok": True})
+            return {
+                "ok": True,
+                "user": user.get("login", "unknown"),
+                "name": user.get("name", ""),
+                "scopes": scope_list,
+                "has_repo_scope": has_repo,
+                "is_fine_grained": is_fine_grained,
+                "rate_remaining": rate_remaining,
+                "token_prefix": token[:4] + "..." + token[-4:] if len(token) > 12 else "***",
+            }
+    except Exception as exc:
+        return {"ok": False, "error": f"Connection failed: {exc}",
+                "hint": "Check network connectivity to api.github.com"}
 
-        # Validate identifier format to prevent path traversal / injection
+
+@app.get("/api/diagnostics/repo/{project_id}")
+async def diagnose_repo(project_id: str) -> Any:
+    """Check git health for a specific project: remote, branches, fetch, push access."""
+    project = db.get_project(project_id)
+    if not project:
+        return JSONResponse({"error": "Project not found"}, 404)
+
+    from app.git_worktree import parse_github_remote, get_default_branch, _run, GitWorktreeError
+    import asyncio
+
+    local_path = project["local_path"]
+    repo = Path(local_path)
+    checks = []
+
+    # 1. Path exists
+    exists = repo.exists()
+    checks.append({"name": "Repository path exists", "ok": exists,
+                    "detail": str(repo) if exists else f"Path not found: {repo}"})
+    if not exists:
+        return {"project": project["name"], "checks": checks}
+
+    # 2. Is a git repo
+    git_dir = (repo / ".git").exists()
+    checks.append({"name": "Is a git repository", "ok": git_dir,
+                    "detail": "Yes" if git_dir else "No .git directory found"})
+    if not git_dir:
+        return {"project": project["name"], "checks": checks}
+
+    # 3. Remote URL
+    try:
+        remote_url = await asyncio.to_thread(_run, ["git", "-C", str(repo), "remote", "get-url", "origin"])
+        checks.append({"name": "Remote 'origin' configured", "ok": True, "detail": remote_url})
+    except GitWorktreeError as e:
+        checks.append({"name": "Remote 'origin' configured", "ok": False, "detail": str(e)})
+        return {"project": project["name"], "checks": checks}
+
+    # 4. GitHub remote parsed
+    gh = parse_github_remote(repo)
+    if gh:
+        checks.append({"name": "GitHub remote detected", "ok": True, "detail": f"{gh[0]}/{gh[1]}"})
+    else:
+        checks.append({"name": "GitHub remote detected", "ok": False,
+                        "detail": f"Could not parse GitHub owner/repo from: {remote_url}"})
+
+    # 5. Default branch
+    try:
+        default_br = await asyncio.to_thread(get_default_branch, repo)
+        base = project.get("base_branch") or default_br
+        checks.append({"name": "Base branch", "ok": True, "detail": base})
+    except Exception as e:
+        checks.append({"name": "Base branch", "ok": False, "detail": str(e)})
+        base = "main"
+
+    # 6. Fetch from origin
+    ssh_env = orchestrator._get_git_ssh_env()
+    try:
+        await asyncio.to_thread(_run, ["git", "-C", str(repo), "fetch", "origin", base],
+                                None, ssh_env)
+        checks.append({"name": f"Fetch origin/{base}", "ok": True, "detail": "Success"})
+    except GitWorktreeError as e:
+        err = str(e)
+        hint = ""
+        if "permission denied" in err.lower() or "publickey" in err.lower():
+            hint = " — Check SSH keys or switch to HTTPS with a token"
+        elif "could not resolve" in err.lower():
+            hint = " — Network/DNS issue"
+        checks.append({"name": f"Fetch origin/{base}", "ok": False, "detail": err + hint})
+
+    # 7. GitHub API access (if token + GitHub remote)
+    if gh and settings.github_token:
+        import httpx
+        owner, repo_name = gh
         try:
-            identifier = validate_identifier(identifier)
-        except ValueError:
-            return JSONResponse({"ok": False, "error": "Invalid identifier"}, status_code=400)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo_name}",
+                    headers={
+                        "Authorization": f"Bearer {settings.github_token}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    perms = data.get("permissions", {})
+                    can_push = perms.get("push", False)
+                    checks.append({"name": "GitHub API repo access", "ok": True,
+                                   "detail": f"Push: {'yes' if can_push else 'NO'}, Admin: {'yes' if perms.get('admin') else 'no'}"})
+                    if not can_push:
+                        checks.append({"name": "Push permission", "ok": False,
+                                        "detail": "Token does not have push access to this repo. For fine-grained tokens: enable 'Contents: Read and write'. For classic tokens: enable 'repo' scope."})
+                elif resp.status_code == 404:
+                    checks.append({"name": "GitHub API repo access", "ok": False,
+                                   "detail": "404 — repo not found or token has no access. For org repos with SSO, authorize the token for the org."})
+                elif resp.status_code == 403:
+                    checks.append({"name": "GitHub API repo access", "ok": False,
+                                   "detail": "403 — forbidden. If this is an org repo with SAML SSO, you must authorize the token."})
+                else:
+                    checks.append({"name": "GitHub API repo access", "ok": False,
+                                   "detail": f"HTTP {resp.status_code}: {resp.text[:200]}"})
+        except Exception as exc:
+            checks.append({"name": "GitHub API repo access", "ok": False, "detail": str(exc)})
 
-        mapping = db.get_team_mapping(team_id)
-        if not (mapping and mapping["enabled"]):
-            return JSONResponse({"ok": True})
+    return {"project": project["name"], "checks": checks}
 
-        reason = "new" if action == "create" else None
-        if reason is None and state_type not in ("completed", "canceled"):
-            prev = db.get_issue_state(issue_id)
-            if prev and prev["last_state_type"] in ("completed", "canceled"):
-                reason = "reopened"
 
-        if reason:
-            db.upsert_issue_state(
-                issue_id=issue_id,
-                identifier=identifier,
-                team_id=team_id,
-                state_type=state_type,
-                state_name=state.get("name"),
-                last_comment_at=None,
-                last_seen_at=data.get("updatedAt", ""),
-                last_updated_at=data.get("updatedAt", ""),
-                title=data.get("title"),
-            )
-            db.enqueue_job(issue_id, identifier, team_id, reason)
+# ── Mode Detection API ──
 
-    elif event_type == "Comment" and action == "create":
-        issue_id = data.get("issueId")
-        user = data.get("user") or {}
-        user_id = user.get("id", "")
-        user_email = user.get("email", "").lower()
+@app.post("/api/detect-mode")
+async def detect_mode_api(request: Request) -> Any:
+    data = await request.json()
+    text = data.get("text", "")
+    mode = detect_mode(text)
+    return {"mode": mode, "label": MODE_LABELS.get(mode, "Feature"), "color": MODE_COLORS.get(mode, "#6366f1")}
 
-        # Skip comments we posted ourselves (identified by marker in body)
-        if Orchestrator.is_own_comment(data.get("body", "")):
-            return JSONResponse({"ok": True})
 
-        ignored_ids = settings.ignored_author_ids()
-        ignored_emails = settings.ignored_author_emails()
-        if user_id in ignored_ids or user_email in ignored_emails:
-            return JSONResponse({"ok": True})
-
-        if issue_id:
-            issue_state = db.get_issue_state(issue_id)
-            if issue_state:
-                mapping = db.get_team_mapping(issue_state["team_id"])
-                if mapping and mapping["enabled"]:
-                    db.enqueue_job(issue_id, issue_state["identifier"], issue_state["team_id"], "comment")
-
-    return JSONResponse({"ok": True})
-
+# ── Entrypoint ──
 
 def run() -> None:
     import uvicorn
-    import logging
-
-    # Custom access log filter to suppress noisy health check endpoints
-    class HealthCheckFilter(logging.Filter):
-        def filter(self, record: logging.LogRecord) -> bool:
-            # Only log if it's NOT a health check endpoint
-            msg = record.getMessage()
-            return "/api/status" not in msg and "/api/health" not in msg
-
-    uvicorn_logger = logging.getLogger("uvicorn.access")
-    uvicorn_logger.addFilter(HealthCheckFilter())
-
-    uvicorn.run(app, host=settings.web_host, port=settings.web_port)
+    uvicorn.run(
+        "app.main:app",
+        host=settings.web_host,
+        port=settings.web_port,
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":

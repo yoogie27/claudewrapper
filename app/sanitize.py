@@ -1,21 +1,15 @@
-"""Input sanitization for data flowing from external sources (Linear) into
-prompts, file paths, and git operations.
-
-Defence-in-depth: even though Claude Code runs in a container with
---dangerously-skip-permissions, we still limit what untrusted data can do.
-"""
+"""Input sanitization for prompts, file paths, and git operations."""
 from __future__ import annotations
 
 import re
 
 
-# ── Identifier validation ───────────────────────────────────────────
-# Linear identifiers follow the pattern TEAM-123 (letters + dash + digits).
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
+# Identifiers: slug-NNN (e.g. my-project-001)
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-]*-\d+$")
 
 
 def validate_identifier(identifier: str) -> str:
-    """Ensure an identifier looks like a Linear ticket (e.g. PROJ-42).
+    """Ensure an identifier matches expected format (e.g. my-project-001).
 
     Prevents path traversal and command injection via crafted identifiers
     used in branch names (ticket/{identifier}) and file paths.

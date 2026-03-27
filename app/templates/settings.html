@@ -1,128 +1,226 @@
 {% extends "base.html" %}
-{% block title %}Settings - ClaudeWrapper{% endblock %}
-
-{% block content %}
-<div class="page-header">
-  <h1>Settings</h1>
-  <p>System configuration and Linear workflow state mappings</p>
-</div>
-
-<!-- Current config overview -->
-<div class="card">
-  <div class="card-header">
-    <h2>System Status</h2>
-  </div>
-  <div class="stats" style="margin-bottom:0">
-    <div class="stat">
-      <div class="stat-label">Workers</div>
-      <div class="stat-value">{{ settings.worker_count }}</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">Poll Interval</div>
-      <div class="stat-value">{{ settings.poll_interval_seconds }}s</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">Mode</div>
-      <div class="stat-value text-sm">{{ "Test" if settings.test_mode else "Live" }}</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">MCP</div>
-      <div class="stat-value text-sm">{{ "On" if settings.linear_mcp_enabled or settings.linear_api_key else "Off" }}</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">Worktrees</div>
-      <div class="stat-value text-sm">{{ "On" if settings.use_git_worktrees else "Off" }}</div>
-    </div>
-  </div>
-</div>
-
-<!-- SSH Deploy Key -->
-<div class="card">
-  <div class="card-header">
-    <h2>SSH Deploy Key</h2>
-  </div>
-  <div id="ssh-key-section">
-    <p class="text-muted text-sm mb-8">Loading SSH key...</p>
-  </div>
-</div>
-
-<!-- Status mapping -->
-<div class="card">
-  <div class="card-header">
-    <h2>Workflow State Mapping</h2>
-  </div>
-
-  {% if available_states %}
-  <div class="alert alert-info mb-16">
-    Available states in your team:
-    {% for s in available_states %}
-    <span class="badge badge-test" style="margin:2px">{{ s.name }} <span class="text-muted">({{ s.type }})</span></span>
-    {% endfor %}
-  </div>
-  {% endif %}
-
-  <p class="text-muted text-sm mb-16">
-    Map ClaudeWrapper outcomes to your Linear workflow states. These are auto-detected on startup — only change if the defaults are wrong.
-  </p>
-
-  <form method="post" action="/api/settings">
-    <div class="form-group">
-      <label>Done</label>
-      <input type="text" name="status_done" value="{{ values.done }}" placeholder="e.g. Done" />
-      <div class="hint">Final state after a successful Claude run{% if values.done %} — currently: <strong>{{ values.done }}</strong>{% endif %}</div>
+{% block title %}Settings — ClaudeWrapper{% endblock %}
+{% block body %}
+<div class="page-layout">
+    <div class="page-header">
+        <h1>Settings</h1>
+        <a href="/" class="btn btn-secondary">&#8592; Back</a>
     </div>
 
-    <div class="form-group">
-      <label>In Review</label>
-      <input type="text" name="status_review" value="{{ values.review }}" placeholder="e.g. In Review" />
-      <div class="hint">Set after Claude completes, before manual review (optional)</div>
-    </div>
-
-    <div class="form-group">
-      <label>Awaiting Feedback (HITL)</label>
-      <input type="text" name="status_hitl" value="{{ values.hitl }}" placeholder="e.g. Awaiting Feedback" />
-      <div class="hint">Set when Claude needs human input before continuing</div>
-    </div>
-
-    <div class="form-group">
-      <label>Blocked / Error</label>
-      <input type="text" name="status_error" value="{{ values.error }}" placeholder="e.g. Blocked" />
-      <div class="hint">Set when Claude's session fails or crashes</div>
-    </div>
-
-    <button type="submit" class="btn btn-primary">Save Settings</button>
-  </form>
-</div>
-{% endblock %}
-
-{% block scripts %}
-<script>
-(async () => {
-  const section = document.getElementById('ssh-key-section');
-  try {
-    const resp = await fetch('/api/ssh/public-key');
-    if (resp.ok) {
-      const data = await resp.json();
-      section.innerHTML = `
-        <p class="text-muted text-sm mb-8">Add this key as a <strong>deploy key</strong> in your GitHub repositories (Repo Settings &rarr; Deploy keys). Enable "Allow write access" for push/PR creation.</p>
-        <div style="position:relative">
-          <pre style="padding:12px; background:var(--bg); border-radius:6px; font-size:.8rem; word-break:break-all; white-space:pre-wrap; margin-bottom:8px;">${data.public_key}</pre>
-          <button type="button" class="btn btn-sm btn-secondary" id="copy-ssh-key" style="position:absolute; top:8px; right:8px;">Copy</button>
+    <!-- GitHub Token Diagnostics -->
+    <div class="settings-section">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <h3 style="margin:0">GitHub Integration</h3>
+            <button class="btn btn-sm btn-primary" onclick="checkGitHub()" id="btn-gh-check">Run Check</button>
         </div>
-      `;
-      document.getElementById('copy-ssh-key').addEventListener('click', () => {
-        navigator.clipboard.writeText(data.public_key).then(() => {
-          const btn = document.getElementById('copy-ssh-key');
-          btn.textContent = 'Copied!';
-          setTimeout(() => btn.textContent = 'Copy', 2000);
-        });
-      });
-    } else {
-      section.innerHTML = '<p class="text-muted text-sm">SSH not configured. Set <code>SSH_KEY_DIR</code> to enable SSH key management.</p>';
+        <div id="gh-status">
+            {% if settings.github_token %}
+            <div class="diag-row diag-ok"><span class="diag-icon">&#10003;</span> Token configured ({{ settings.github_token[:4] }}...{{ settings.github_token[-4:] }})</div>
+            {% else %}
+            <div class="diag-row diag-fail"><span class="diag-icon">&#10007;</span> GITHUB_TOKEN not set</div>
+            {% endif %}
+        </div>
+        <div id="gh-results" style="margin-top:8px"></div>
+    </div>
+
+    <!-- Per-Project Repo Diagnostics -->
+    <div class="settings-section">
+        <h3>Project Repository Checks</h3>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Test git access and GitHub API permissions for each project.</p>
+        <div id="repo-checks">
+            {% for p in projects %}
+            <div class="repo-check-item">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                    <strong>{{ p.name }}</strong>
+                    <button class="btn btn-sm btn-secondary" onclick="checkRepo('{{ p.id }}', this)">Check</button>
+                </div>
+                <div class="diag-detail" style="font-size:12px;color:var(--text-muted)">{{ p.local_path }}</div>
+                <div class="repo-results" id="repo-{{ p.id }}"></div>
+            </div>
+            {% endfor %}
+            {% if not projects %}
+            <div style="color:var(--text-dim);font-size:13px">No projects configured yet.</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Setup Guide -->
+    <div class="settings-section">
+        <h3>GitHub Token Setup Guide</h3>
+        <div class="guide">
+            <div class="guide-step">
+                <div class="guide-num">1</div>
+                <div>
+                    <strong>Choose token type</strong>
+                    <p>For company/org repos, you need either:</p>
+                    <ul>
+                        <li><strong>Fine-grained token</strong> (recommended) — scoped to specific repos</li>
+                        <li><strong>Classic token</strong> — broader access, simpler setup</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="guide-step">
+                <div class="guide-num">2</div>
+                <div>
+                    <strong>Create the token</strong>
+                    <p>Go to <code>github.com/settings/tokens</code></p>
+                    <div class="guide-box">
+                        <strong>Fine-grained token:</strong>
+                        <ol>
+                            <li>"Generate new token" &rarr; "Fine-grained token"</li>
+                            <li><strong>Resource owner</strong>: Select your <em>organization</em> (not personal)</li>
+                            <li><strong>Repository access</strong>: "Only select repositories" &rarr; pick your repos</li>
+                            <li><strong>Permissions</strong>:
+                                <ul>
+                                    <li>Contents: <strong>Read and write</strong></li>
+                                    <li>Pull requests: <strong>Read and write</strong></li>
+                                    <li>Metadata: <strong>Read-only</strong> (auto-selected)</li>
+                                </ul>
+                            </li>
+                        </ol>
+                    </div>
+                    <div class="guide-box" style="margin-top:8px">
+                        <strong>Classic token:</strong>
+                        <ol>
+                            <li>"Generate new token" &rarr; "Classic"</li>
+                            <li>Select scope: <strong>repo</strong> (full control of private repos)</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+            <div class="guide-step">
+                <div class="guide-num">3</div>
+                <div>
+                    <strong>Authorize for SSO (org repos only)</strong>
+                    <p>If your org uses SAML SSO:</p>
+                    <ol>
+                        <li>After creating the token, find it in the token list</li>
+                        <li>Click <strong>"Configure SSO"</strong> next to the token</li>
+                        <li>Click <strong>"Authorize"</strong> for your organization</li>
+                    </ol>
+                    <p style="color:var(--warning);font-size:13px;margin-top:4px">This step is the #1 reason tokens fail on org repos. Without SSO authorization, you get 404 errors.</p>
+                </div>
+            </div>
+            <div class="guide-step">
+                <div class="guide-num">4</div>
+                <div>
+                    <strong>Add to .env</strong>
+                    <pre><code>GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx</code></pre>
+                    <p>Then restart ClaudeWrapper.</p>
+                </div>
+            </div>
+            <div class="guide-step">
+                <div class="guide-num">5</div>
+                <div>
+                    <strong>Verify</strong>
+                    <p>Click "Run Check" above to validate the token, then check each project.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Existing Settings -->
+    <div class="settings-section">
+        <h3>Server</h3>
+        <div class="settings-row"><span class="label">Host</span><span class="value">{{ settings.web_host }}:{{ settings.web_port }}</span></div>
+        <div class="settings-row"><span class="label">Data Directory</span><span class="value">{{ settings.data_dir }}</span></div>
+        <div class="settings-row"><span class="label">Test Mode</span><span class="value">{{ settings.test_mode }}</span></div>
+    </div>
+
+    <div class="settings-section">
+        <h3>Claude</h3>
+        <div class="settings-row"><span class="label">Command Template</span><span class="value" style="font-size:11px;max-width:60%;text-align:right;word-break:break-all">{{ settings.claude_command_template }}</span></div>
+        <div class="settings-row"><span class="label">Prompt Via</span><span class="value">{{ settings.claude_prompt_via }}</span></div>
+        <div class="settings-row"><span class="label">Workdir Mode</span><span class="value">{{ settings.claude_workdir_mode }}</span></div>
+    </div>
+
+    <div class="settings-section">
+        <h3>Git</h3>
+        <div class="settings-row"><span class="label">Git Worktrees</span><span class="value">{{ settings.use_git_worktrees }}</span></div>
+        <div class="settings-row"><span class="label">Worktree Root</span><span class="value">{{ settings.worktree_root }}</span></div>
+        <div class="settings-row"><span class="label">SSH Key Dir</span><span class="value">{{ settings.ssh_key_dir or "not set" }}</span></div>
+    </div>
+
+    <div class="settings-section">
+        <h3>Limits</h3>
+        <div class="settings-row"><span class="label">Max Concurrent/Project</span><span class="value">{{ settings.max_concurrent_per_project }}</span></div>
+        <div class="settings-row"><span class="label">Stale Job Timeout</span><span class="value">{{ settings.stale_job_timeout_minutes }}min</span></div>
+        <div class="settings-row"><span class="label">Session TTL</span><span class="value">{{ settings.session_ttl_days }} days</span></div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    document.body.style.overflow = 'auto';
+});
+
+async function checkGitHub() {
+    const btn = document.getElementById('btn-gh-check');
+    const el = document.getElementById('gh-results');
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    el.innerHTML = '<div style="color:var(--text-dim);font-size:13px">Connecting to GitHub API...</div>';
+
+    try {
+        const resp = await fetch('/api/diagnostics/github');
+        const data = await resp.json();
+
+        if (data.ok) {
+            el.innerHTML = `
+                <div class="diag-row diag-ok"><span class="diag-icon">&#10003;</span> Authenticated as <strong>${esc(data.user)}</strong>${data.name ? ` (${esc(data.name)})` : ''}</div>
+                <div class="diag-row ${data.is_fine_grained ? 'diag-info' : (data.has_repo_scope ? 'diag-ok' : 'diag-warn')}">
+                    <span class="diag-icon">${data.is_fine_grained ? '&#8505;' : (data.has_repo_scope ? '&#10003;' : '&#9888;')}</span>
+                    ${data.is_fine_grained
+                        ? 'Fine-grained token (scopes not shown — check repo-level permissions below)'
+                        : `Scopes: ${data.scopes.length ? data.scopes.join(', ') : 'none'}`}
+                    ${!data.is_fine_grained && !data.has_repo_scope
+                        ? '<br><span style="color:var(--error)">Missing <code>repo</code> scope — PR creation will fail</span>' : ''}
+                </div>
+                <div class="diag-row diag-info"><span class="diag-icon">&#8505;</span> Rate limit remaining: ${data.rate_remaining}</div>
+            `;
+        } else {
+            el.innerHTML = `
+                <div class="diag-row diag-fail"><span class="diag-icon">&#10007;</span> ${esc(data.error)}</div>
+                ${data.hint ? `<div class="diag-hint">${esc(data.hint)}</div>` : ''}
+            `;
+        }
+    } catch (err) {
+        el.innerHTML = `<div class="diag-row diag-fail"><span class="diag-icon">&#10007;</span> Network error: ${esc(err.message)}</div>`;
     }
-  } catch(e) {
-    section.innerHTML = '<p class="text-muted text-sm">Could not load SSH key.</p>';
-  }
-})();
+
+    btn.disabled = false;
+    btn.textContent = 'Run Check';
+}
+
+async function checkRepo(projectId, btn) {
+    const el = document.getElementById(`repo-${projectId}`);
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    el.innerHTML = '<div style="color:var(--text-dim);font-size:13px;margin-top:6px">Running checks...</div>';
+
+    try {
+        const resp = await fetch(`/api/diagnostics/repo/${projectId}`);
+        const data = await resp.json();
+
+        el.innerHTML = data.checks.map(c => `
+            <div class="diag-row ${c.ok ? 'diag-ok' : 'diag-fail'}">
+                <span class="diag-icon">${c.ok ? '&#10003;' : '&#10007;'}</span>
+                <strong>${esc(c.name)}</strong>: ${esc(c.detail)}
+            </div>
+        `).join('');
+    } catch (err) {
+        el.innerHTML = `<div class="diag-row diag-fail"><span class="diag-icon">&#10007;</span> Error: ${esc(err.message)}</div>`;
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Check';
+}
+
+function esc(s) {
+    if (!s) return '';
+    const el = document.createElement('span');
+    el.textContent = s;
+    return el.innerHTML;
+}
 </script>
 {% endblock %}

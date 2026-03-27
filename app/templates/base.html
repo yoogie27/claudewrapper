@@ -1,155 +1,80 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}ClaudeWrapper{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css">
-  {% block head %}{% endblock %}
-  <script>
-    // Apply theme class before first paint — no flash
-    (function() {
-      var saved = localStorage.getItem('theme');
-      var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      if (saved === 'dark' || (saved === null && prefersDark)) {
-        document.documentElement.classList.add('dark');
-      }
-    })();
-  </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#0f1117" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#f5f6fa" media="(prefers-color-scheme: light)">
+    <title>{% block title %}ClaudeWrapper{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light" disabled>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+        // Theme: apply immediately to prevent flash
+        (function() {
+            const saved = localStorage.getItem('theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const dark = saved ? saved === 'dark' : prefersDark;
+            if (dark) document.documentElement.classList.add('dark');
+        })();
+    </script>
 </head>
 <body>
-  <nav class="sidebar">
-    <div class="sidebar-logo">
-      <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-      <span>ClaudeWrapper</span>
-    </div>
-    <div class="sidebar-nav">
-      <a href="/" class="nav-item {% if active == 'dashboard' %}active{% endif %}">
-        <svg viewBox="0 0 24 24"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
-        <span>Dashboard</span>
-      </a>
-      <a href="/tickets" class="nav-item {% if active == 'tickets' %}active{% endif %}">
-        <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13zM6 20V4h5v7h7v9H6z"/></svg>
-        <span>Tickets</span>
-      </a>
-      <a href="/teams" class="nav-item {% if active == 'teams' %}active{% endif %}">
-        <svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
-        <span>Teams</span>
-      </a>
-      <a href="/files" class="nav-item {% if active == 'files' %}active{% endif %}">
-        <svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
-        <span>Files</span>
-      </a>
-      <a href="/settings" class="nav-item {% if active == 'settings' %}active{% endif %}">
-        <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1112 8.4a3.6 3.6 0 010 7.2z"/></svg>
-        <span>Settings</span>
-      </a>
-    </div>
-    <div class="sidebar-footer" style="display:flex;justify-content:space-between;align-items:center;">
-      <span>ClaudeWrapper v1.0</span>
-      <button id="theme-toggle" title="Toggle dark mode" style="background:none;border:none;cursor:pointer;padding:4px;color:rgba(255,255,255,.5);font-size:1rem;line-height:1;">☀</button>
-    </div>
-  </nav>
+    {% block body %}{% endblock %}
 
-  <main class="content">
-    {% block content %}{% endblock %}
-  </main>
+    <!-- Toast container -->
+    <div id="toast-container"></div>
 
-  {% block scripts %}{% endblock %}
-<!-- Confirm modal -->
-<div id="confirm-modal" class="modal-overlay" style="display:none">
-  <div class="modal">
-    <div class="modal-title" id="confirm-title">Are you sure?</div>
-    <div class="modal-body" id="confirm-body"></div>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" id="confirm-cancel">Cancel</button>
-      <button class="btn btn-danger" id="confirm-ok">Delete</button>
-    </div>
-  </div>
-</div>
+    <script>
+        // Theme toggle
+        function toggleTheme() {
+            const html = document.documentElement;
+            const isDark = html.classList.toggle('dark');
+            localStorage.setItem('theme', isDark ? 'dark' : 'light');
+            document.getElementById('hljs-dark').disabled = !isDark;
+            document.getElementById('hljs-light').disabled = isDark;
+            updateThemeIcon();
+        }
+        function updateThemeIcon() {
+            const btn = document.getElementById('theme-toggle');
+            if (!btn) return;
+            const isDark = document.documentElement.classList.contains('dark');
+            btn.textContent = isDark ? '\u2600' : '\u263E';
+        }
+        document.addEventListener('DOMContentLoaded', updateThemeIcon);
 
-<div id="toast-container"></div>
-<script>
-  // ── Theme toggle ──
-  (function() {
-    const html = document.documentElement;
-    const btn  = document.getElementById('theme-toggle');
-    function sync() {
-      const dark = html.classList.contains('dark');
-      btn.textContent = dark ? '☀' : '☾';
-      btn.style.color = dark ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)';
-    }
-    sync();
-    btn.addEventListener('click', function() {
-      html.classList.toggle('dark');
-      localStorage.setItem('theme', html.classList.contains('dark') ? 'dark' : 'light');
-      sync();
-    });
-  })();
+        // Toast system (HTML-safe)
+        window.toast = function(title, message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const el = document.createElement('div');
+            el.className = `toast toast-${type}`;
+            const strong = document.createElement('strong');
+            strong.textContent = title;
+            el.appendChild(strong);
+            if (message) {
+                const p = document.createElement('p');
+                p.textContent = message;
+                el.appendChild(p);
+            }
+            container.appendChild(el);
+            setTimeout(() => { el.classList.add('toast-exit'); setTimeout(() => el.remove(), 300); }, 4000);
+        };
 
-  // ── Toast notifications ──
-  // Usage: toast('Title', 'Optional message', 'success'|'error'|'info')
-  window.toast = function(title, msg, type) {
-    type = type || 'info';
-    const icons = { success: '✓', error: '✕', info: 'ℹ' };
-    const container = document.getElementById('toast-container');
-    const el = document.createElement('div');
-    el.className = 'toast toast-' + type;
-    el.innerHTML =
-      '<span class="toast-icon">' + icons[type] + '</span>' +
-      '<div class="toast-body">' +
-        '<div class="toast-title">' + title + '</div>' +
-        (msg ? '<div class="toast-msg">' + msg + '</div>' : '') +
-      '</div>' +
-      '<button class="toast-close" onclick="dismissToast(this.closest(\'.toast\'))">✕</button>';
-    container.appendChild(el);
-    setTimeout(function() { dismissToast(el); }, 4000);
-  };
-  window.dismissToast = function(el) {
-    if (!el || el.classList.contains('removing')) return;
-    el.classList.add('removing');
-    setTimeout(function() { el.remove(); }, 200);
-  };
+        // Markdown renderer setup
+        if (window.marked) {
+            marked.setOptions({ breaks: true, gfm: true });
+        }
 
-  // ── Confirm modal ──
-  // Usage: add data-confirm="message" to a form to require confirmation before submit
-  (function() {
-    var overlay = document.getElementById('confirm-modal');
-    var bodyEl  = document.getElementById('confirm-body');
-    var okBtn   = document.getElementById('confirm-ok');
-    var cancelBtn = document.getElementById('confirm-cancel');
-    var pendingForm = null;
-
-    document.addEventListener('submit', function(e) {
-      var form = e.target;
-      if (!form.dataset.confirm) return;
-      e.preventDefault();
-      bodyEl.textContent = form.dataset.confirm;
-      overlay.style.display = '';
-      pendingForm = form;
-    });
-
-    okBtn.addEventListener('click', function() {
-      overlay.style.display = 'none';
-      if (pendingForm) {
-        pendingForm.removeAttribute('data-confirm');
-        pendingForm.requestSubmit();
-        pendingForm = null;
-      }
-    });
-
-    cancelBtn.addEventListener('click', function() {
-      overlay.style.display = 'none';
-      pendingForm = null;
-    });
-
-    overlay.addEventListener('click', function(e) {
-      if (e.target === overlay) {
-        overlay.style.display = 'none';
-        pendingForm = null;
-      }
-    });
-  })();
-</script>
+        // Safe highlight helper (avoids double-highlight warnings)
+        function highlightCode(container) {
+            container.querySelectorAll('pre code:not(.hljs)').forEach(block => {
+                hljs.highlightElement(block);
+            });
+        }
+    </script>
 </body>
 </html>

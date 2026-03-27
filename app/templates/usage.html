@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Token Usage — ClaudeWrapper{% endblock %}
+{% block body %}
+<div class="page-layout">
+    <div class="page-header">
+        <h1>Token Usage</h1>
+        <a href="/" class="btn btn-secondary">&#8592; Back</a>
+    </div>
+
+    <div class="stat-cards">
+        <div class="stat-card">
+            <div class="stat-card-label">Total Spend</div>
+            <div class="stat-card-value">${{ "%.4f" | format(usage | sum(attribute='total_cost_usd')) }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-label">Total Runs</div>
+            <div class="stat-card-value">{{ usage | sum(attribute='run_count') }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-label">Input Tokens</div>
+            <div class="stat-card-value">{{ "{:,}".format(usage | sum(attribute='total_input_tokens')) }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-label">Output Tokens</div>
+            <div class="stat-card-value">{{ "{:,}".format(usage | sum(attribute='total_output_tokens')) }}</div>
+        </div>
+    </div>
+
+    <h2 style="margin-bottom: 12px; font-size: 16px;">By Project</h2>
+    <div class="table-wrap" style="margin-bottom: 32px;">
+        <table>
+            <thead>
+                <tr>
+                    <th>Project</th>
+                    <th>Runs</th>
+                    <th>Input Tokens</th>
+                    <th>Output Tokens</th>
+                    <th>Cost</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in usage %}
+                <tr>
+                    <td><strong>{{ p.name }}</strong> <span style="color:var(--text-muted);font-size:12px">{{ p.slug }}</span></td>
+                    <td class="mono">{{ p.run_count }}</td>
+                    <td class="mono">{{ "{:,}".format(p.total_input_tokens) }}</td>
+                    <td class="mono">{{ "{:,}".format(p.total_output_tokens) }}</td>
+                    <td class="mono">${{ "%.4f" | format(p.total_cost_usd) }}</td>
+                </tr>
+                {% endfor %}
+                {% if not usage %}
+                <tr><td colspan="5" style="text-align:center;color:var(--text-dim);padding:24px">No usage data yet</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if timeline %}
+    <h2 style="margin-bottom: 12px; font-size: 16px;">Daily Cost (Last 30 Days)</h2>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Runs</th>
+                    <th>Cost</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for d in timeline %}
+                <tr>
+                    <td>{{ d.date }}</td>
+                    <td class="mono">{{ d.runs }}</td>
+                    <td class="mono">${{ "%.4f" | format(d.cost_usd) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // Allow scrolling on this page
+        document.body.style.overflow = 'auto';
+    });
+</script>
+{% endblock %}

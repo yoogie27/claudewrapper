@@ -21,38 +21,42 @@ There are no automated tests. Verify changes manually via the web UI at `http://
 
 ## Architecture
 
-ClaudeWrapper is a FastAPI server that bridges Linear tickets to Claude Code CLI sessions.
+ClaudeWrapper is a FastAPI server providing a mobile-first chat interface for managing tasks across multiple projects, with Claude Code CLI as the backend AI engine.
 
 **Flow:**
-1. `_poll_loop` (or webhook `POST /api/webhook/linear`) detects new/updated Linear issues
-2. Matching issues are enqueued in `job_queue` (SQLite)
-3. N async worker tasks (`_worker_loop`) dequeue jobs, build a prompt, and run Claude via `subprocess.Popen` inside `asyncio.to_thread`
-4. Results are posted back to Linear as comments and the ticket state is updated
+1. User creates a project (pointing to a local git repo)
+2. User creates tasks within projects (auto-detected as Bug/Feature/Redesign)
+3. User sends chat messages on tasks — each message enqueues a Claude run
+4. Per-project worker picks up runs sequentially, builds a prompt (mode-specific + conversation history), runs Claude via subprocess
+5. Claude's stream-json output is parsed and streamed to the chat UI via SSE
+6. Results are stored as messages; token usage is tracked per run
 
 **Key files:**
-- `app/orchestrator.py` — the core loop: polling, workers, prompt building, state transitions, stale-job reaper, GitHub PR creation
-- `app/db.py` — all SQLite access; single connection with WAL mode; every DB call runs on the event loop thread (never from worker threads)
-- `app/linear_client.py` — async GraphQL client with a persistent `httpx.AsyncClient` and an in-process workflow-state cache per team
-- `app/claude_runner.py` — launches Claude as a subprocess; writes stdout/stderr directly to files so the SSE log endpoint can stream them live
-- `app/git_worktree.py` — manages `git worktree add/remove` per ticket; also handles GitHub remote parsing and branch pushing for auto-PR
+- `app/main.py` — FastAPI routes: REST API for projects/tasks/messages, SSE streaming, HTML pages
+- `app/orchestrator.py` — Per-project worker loops, prompt building, run execution, PR creation
+- `app/db.py` — SQLite with WAL; tables: projects, tasks, messages, runs, config
+- `app/claude_runner.py` — Launches Claude as subprocess; writes stdout/stderr to files for SSE streaming
+- `app/git_worktree.py` — Git worktree create/reset/push per task; ensures fresh base branch each run
+- `app/task_modes.py` — Mode detection (bug/feature/redesign) and mode-specific prompt templates
+- `app/config.py` — Pydantic settings from .env
 
 **Data layout (`DATA_DIR`, default `./data`):**
 ```
 data/
   app.db                       # SQLite database
-  sessions/<identifier>/<job_id>/
+  sessions/<identifier>/<run_id>/
     prompt.txt                 # prompt sent to Claude
-    stdout.txt                 # streamed live via /sessions/{id}/log/stream
+    stdout.txt                 # streamed live via SSE
     stderr.txt
-    worktree.json              # repo + worktree paths (if USE_GIT_WORKTREES=true)
-  worktrees/<identifier>/      # git worktrees (one per ticket, reused on retry)
+    worktree.json              # repo + worktree paths
+  worktrees/<identifier>/      # git worktrees (one per task)
   logs/app.log
 ```
 
-**SQLite tables:** `team_mappings`, `issue_state`, `job_queue`, `sessions` (one row per run, keyed by `run_id` = job_id), `label_instructions`, `config`
+**SQLite tables:** `projects`, `tasks`, `messages`, `runs`, `config`
 
-**Session lifecycle:** `pending` → `running` → `done` | `failed` | `awaiting_feedback` (HITL). The `_reaper_loop` resets jobs stuck in `running` after `STALE_JOB_TIMEOUT_MINUTES` (default 4h) — used for crash recovery, not as a timeout.
+**Task modes:** Bug (fix-focused), Feature (build-focused), Redesign (refactor-focused) — auto-detected from title keywords, each with different system prompt sections.
 
-**Prompt delivery modes** (`CLAUDE_PROMPT_VIA`): `prompt_file` (default), `arg`, or `stdin`. Controlled by `CLAUDE_COMMAND_TEMPLATE`.
+**Session continuity:** Tasks reuse worktrees and Claude sessions (via `--resume`). Before each run, the worktree is reset to latest `origin/{base_branch}` to prevent merge conflicts.
 
-**`pyproject.toml` note:** file must be saved without BOM (UTF-8 plain). `[tool.setuptools.packages.find]` is set to `include = ["app*"]` to exclude the `data/` directory from the build.
+**`pyproject.toml` note:** File must be saved without BOM (UTF-8 plain). `[tool.setuptools.packages.find]` is set to `include = ["app*"]` to exclude the `data/` directory from the build.
