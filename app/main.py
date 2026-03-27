@@ -710,6 +710,10 @@ async def get_actions_status(project_id: str) -> Any:
                 },
                 params={"per_page": 5},
             )
+            if resp.status_code == 403:
+                return {"runs": [], "error": "Token needs Actions: Read permission (fine-grained) or repo scope (classic)"}
+            if resp.status_code == 404:
+                return {"runs": [], "error": "Repo not found or no Actions access — check token permissions"}
             if resp.status_code != 200:
                 return {"runs": [], "error": f"GitHub API {resp.status_code}"}
 
