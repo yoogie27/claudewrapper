@@ -113,24 +113,38 @@ html, body {
     overflow: hidden;
     border-right: none;
 }
-.sidebar-toggle {
+.sidebar-toggles {
     display: none; /* shown on desktop via media query */
-    position: relative;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 3px;
+    background: var(--panel-bg);
+    border-right: 1px solid var(--panel-border);
     z-index: 5;
-    width: 16px;
-    min-width: 16px;
+}
+.sidebar-toggle {
+    width: 28px;
+    height: 28px;
     border: none;
-    background: var(--panel-border);
+    background: transparent;
     color: var(--text-dim);
     cursor: pointer;
-    font-size: 14px;
     padding: 0;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     transition: background .15s, color .15s;
-    align-self: stretch;
+    opacity: .6;
 }
 .sidebar-toggle:hover {
-    background: var(--accent);
-    color: #fff;
+    background: var(--card-hover);
+    color: var(--accent);
+    opacity: 1;
+}
+.sidebar-toggle.active {
+    color: var(--accent);
+    opacity: 1;
 }
 
 .panel-header {
@@ -1021,7 +1035,7 @@ html.dark .message-system .message-content code { background: rgba(255,255,255,.
     .bottom-nav { display: none !important; }
     .panel { display: flex !important; }
     .panel.collapsed { display: none !important; }
-    .sidebar-toggle { display: flex; align-items: center; justify-content: center; }
+    .sidebar-toggles { display: flex; }
 }
 
 /* ── Scrollbars ──────────────────────────────────────── */
