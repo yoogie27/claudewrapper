@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     github_token: str = Field(default="", alias="GITHUB_TOKEN")
     ssh_key_dir: str = Field(default="", alias="SSH_KEY_DIR")
 
+    def ssh_key_path(self) -> Path:
+        """SSH key directory. Falls back to {DATA_DIR}/ssh if not explicitly set."""
+        if self.ssh_key_dir:
+            return Path(self.ssh_key_dir).resolve()
+        return self.data_path() / "ssh"
+
     def data_path(self) -> Path:
         return Path(self.data_dir).resolve()
 

@@ -29,11 +29,11 @@ orchestrator = Orchestrator(settings, db)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if settings.ssh_key_dir:
-        try:
-            setup_ssh(Path(settings.ssh_key_dir))
-        except Exception as exc:
-            logging.getLogger("claudewrapper").warning("SSH setup failed: %s", exc)
+    # Always ensure SSH keys exist (auto-creates if needed)
+    try:
+        setup_ssh(settings.ssh_key_path())
+    except Exception as exc:
+        logging.getLogger("claudewrapper").warning("SSH setup failed: %s", exc)
     await orchestrator.start()
     yield
 
@@ -615,6 +615,21 @@ async def diagnose_repo(project_id: str) -> Any:
             checks.append({"name": "GitHub API repo access", "ok": False, "detail": str(exc)})
 
     return {"project": project["name"], "checks": checks}
+
+
+# ── SSH Key API ──
+
+@app.get("/api/ssh/public-key")
+async def get_ssh_public_key() -> Any:
+    """Get the SSH public key, generating one if it doesn't exist."""
+    from app.ssh import get_public_key, ensure_ssh_keypair
+    key_dir = settings.ssh_key_path()
+    try:
+        ensure_ssh_keypair(key_dir)
+        pub = get_public_key(key_dir)
+        return {"ok": True, "public_key": pub, "key_dir": str(key_dir)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 # ── GitHub Actions Status API ──

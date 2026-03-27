@@ -23,6 +23,23 @@
         <div id="gh-results" style="margin-top:8px"></div>
     </div>
 
+    <!-- SSH Deploy Key -->
+    <div class="settings-section">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <h3 style="margin:0">SSH Deploy Key</h3>
+            <button class="btn btn-sm btn-secondary" onclick="loadSSHKey()" id="btn-ssh">Show Key</button>
+        </div>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:8px">
+            This key is used for git clone/fetch/push over SSH. Add it as a <strong>deploy key</strong> to your GitHub repo (Settings &rarr; Deploy keys &rarr; Add &rarr; check "Allow write access").
+        </p>
+        <div id="ssh-key-display" style="display:none">
+            <div class="ssh-key-box">
+                <code id="ssh-key-text"></code>
+                <button class="btn btn-sm btn-primary" onclick="copySSHKey()" id="btn-ssh-copy" style="margin-top:8px">Copy to Clipboard</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Per-Project Repo Diagnostics -->
     <div class="settings-section">
         <h3>Project Repository Checks</h3>
@@ -215,6 +232,52 @@ async function checkRepo(projectId, btn) {
 
     btn.disabled = false;
     btn.textContent = 'Check';
+}
+
+async function loadSSHKey() {
+    const btn = document.getElementById('btn-ssh');
+    const display = document.getElementById('ssh-key-display');
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+    try {
+        const resp = await fetch('/api/ssh/public-key');
+        const data = await resp.json();
+        if (data.ok && data.public_key) {
+            document.getElementById('ssh-key-text').textContent = data.public_key;
+            display.style.display = 'block';
+            btn.textContent = 'Refresh';
+        } else {
+            display.innerHTML = `<div class="diag-row diag-fail"><span class="diag-icon">&#10007;</span> ${esc(data.error || 'Failed to load key')}</div>`;
+            display.style.display = 'block';
+            btn.textContent = 'Retry';
+        }
+    } catch (err) {
+        display.innerHTML = `<div class="diag-row diag-fail"><span class="diag-icon">&#10007;</span> ${esc(err.message)}</div>`;
+        display.style.display = 'block';
+        btn.textContent = 'Retry';
+    }
+    btn.disabled = false;
+}
+
+async function copySSHKey() {
+    const text = document.getElementById('ssh-key-text').textContent;
+    try {
+        await navigator.clipboard.writeText(text);
+        const btn = document.getElementById('btn-ssh-copy');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy to Clipboard'; }, 2000);
+    } catch {
+        // Fallback for non-HTTPS
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        const btn = document.getElementById('btn-ssh-copy');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy to Clipboard'; }, 2000);
+    }
 }
 
 function esc(s) {

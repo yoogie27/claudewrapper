@@ -83,9 +83,7 @@ class Orchestrator:
         self._project_workers[project_id] = task
 
     def _get_git_ssh_env(self) -> dict[str, str] | None:
-        if not self.settings.ssh_key_dir:
-            return None
-        key_dir = Path(self.settings.ssh_key_dir)
+        key_dir = self.settings.ssh_key_path()
         if (key_dir / "id_ed25519").exists():
             return get_git_ssh_env(key_dir)
         return None

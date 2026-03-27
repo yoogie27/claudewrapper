@@ -1208,6 +1208,25 @@ tr:last-child td { border-bottom: none; }
     flex-shrink: 0;
 }
 
+/* ── SSH Key Display ──────────────────────────────────── */
+.ssh-key-box {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    margin-top: 8px;
+}
+.ssh-key-box code {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: #e4e5f1;
+    word-break: break-all;
+    line-height: 1.6;
+    display: block;
+    white-space: pre-wrap;
+    user-select: all;
+}
+
 /* ── Diagnostics ─────────────────────────────────────── */
 .diag-row {
     display: flex;
