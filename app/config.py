@@ -21,9 +21,9 @@ class Settings(BaseSettings):
     claude_prompt_arg: str = Field(default="--prompt", alias="CLAUDE_PROMPT_ARG")
     claude_workdir_mode: str = Field(default="project_path", alias="CLAUDE_WORKDIR_MODE")
 
-    workspace_root: str = Field(default="./data/workspace", alias="WORKSPACE_ROOT")
+    workspace_root: str = Field(default="", alias="WORKSPACE_ROOT")
     use_git_worktrees: bool = Field(default=True, alias="USE_GIT_WORKTREES")
-    worktree_root: str = Field(default="./data/worktrees", alias="WORKTREE_ROOT")
+    worktree_root: str = Field(default="", alias="WORKTREE_ROOT")
 
     max_concurrent_per_project: int = Field(default=1, alias="MAX_CONCURRENT_PER_PROJECT")
     stale_job_timeout_minutes: int = Field(default=240, alias="STALE_JOB_TIMEOUT_MINUTES")
@@ -36,13 +36,21 @@ class Settings(BaseSettings):
         return Path(self.data_dir).resolve()
 
     def workspace_path(self) -> Path:
-        return Path(self.workspace_root).resolve()
+        if self.workspace_root:
+            return Path(self.workspace_root).resolve()
+        return self.data_path() / "workspace"
+
+    def worktree_path(self) -> Path:
+        if self.worktree_root:
+            return Path(self.worktree_root).resolve()
+        return self.data_path() / "worktrees"
 
     def ensure_dirs(self) -> None:
         base = self.data_path()
-        for sub in ["sessions", "logs", "worktrees"]:
+        for sub in ["sessions", "logs"]:
             (base / sub).mkdir(parents=True, exist_ok=True)
         self.workspace_path().mkdir(parents=True, exist_ok=True)
+        self.worktree_path().mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

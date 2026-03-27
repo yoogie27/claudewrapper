@@ -142,7 +142,7 @@ class Orchestrator:
         if self.settings.use_git_worktrees and workdir and workdir.exists():
             try:
                 ssh_env = self._get_git_ssh_env()
-                wt_root = Path(self.settings.worktree_root).resolve()
+                wt_root = self.settings.worktree_path()
                 base_branch = project.get("base_branch", "") or ""
                 worktree_path = await asyncio.to_thread(
                     ensure_worktree, workdir, wt_root, identifier, ssh_env, base_branch

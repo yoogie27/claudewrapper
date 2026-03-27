@@ -136,9 +136,9 @@
 
     <div class="settings-section">
         <h3>Git</h3>
-        <div class="settings-row"><span class="label">Workspace Root</span><span class="value">{{ settings.workspace_root }}</span></div>
+        <div class="settings-row"><span class="label">Workspace Root</span><span class="value">{{ settings.workspace_path() }}</span></div>
         <div class="settings-row"><span class="label">Git Worktrees</span><span class="value">{{ settings.use_git_worktrees }}</span></div>
-        <div class="settings-row"><span class="label">Worktree Root</span><span class="value">{{ settings.worktree_root }}</span></div>
+        <div class="settings-row"><span class="label">Worktree Root</span><span class="value">{{ settings.worktree_path() }}</span></div>
         <div class="settings-row"><span class="label">SSH Key Dir</span><span class="value">{{ settings.ssh_key_dir or "not set" }}</span></div>
     </div>
 
