@@ -240,6 +240,66 @@ async def delete_task(task_id: str) -> Any:
     return {"ok": True}
 
 
+# ── Image Upload ──
+
+@app.post("/api/tasks/{task_id}/upload")
+async def upload_image(task_id: str, request: Request) -> Any:
+    """Accept image upload (multipart or raw base64 JSON). Returns URL."""
+    task = db.get_task(task_id)
+    if not task:
+        return JSONResponse({"error": "Task not found"}, 404)
+
+    upload_dir = settings.data_path() / "uploads" / task_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    content_type = request.headers.get("content-type", "")
+    if "multipart" in content_type:
+        from starlette.datastructures import UploadFile as _UF
+        form = await request.form()
+        file = form.get("file")
+        if not file or not hasattr(file, "read"):
+            return JSONResponse({"error": "No file uploaded"}, 400)
+        ext = Path(file.filename).suffix or ".png"
+        fname = f"{uuid.uuid4().hex[:12]}{ext}"
+        fpath = upload_dir / fname
+        data = await file.read()
+        fpath.write_bytes(data)
+    else:
+        body = await request.json()
+        b64 = body.get("data", "")
+        if not b64:
+            return JSONResponse({"error": "No image data"}, 400)
+        import base64
+        # Strip data URI prefix if present
+        if "," in b64:
+            b64 = b64.split(",", 1)[1]
+        data = base64.b64decode(b64)
+        ext = body.get("ext", ".png")
+        fname = f"{uuid.uuid4().hex[:12]}{ext}"
+        fpath = upload_dir / fname
+        fpath.write_bytes(data)
+
+    url = f"/api/uploads/{task_id}/{fname}"
+    return {"ok": True, "url": url, "filename": fname}
+
+
+@app.get("/api/uploads/{task_id}/{filename}")
+async def serve_upload(task_id: str, filename: str) -> Any:
+    """Serve an uploaded image."""
+    from fastapi.responses import FileResponse
+    fpath = settings.data_path() / "uploads" / task_id / filename
+    if not fpath.exists():
+        return PlainTextResponse("Not found", status_code=404)
+    media = "image/png"
+    if filename.endswith(".jpg") or filename.endswith(".jpeg"):
+        media = "image/jpeg"
+    elif filename.endswith(".gif"):
+        media = "image/gif"
+    elif filename.endswith(".webp"):
+        media = "image/webp"
+    return FileResponse(fpath, media_type=media)
+
+
 # ── Messages & Chat API ──
 
 @app.get("/api/tasks/{task_id}/messages")
