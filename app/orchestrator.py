@@ -136,7 +136,7 @@ class Orchestrator:
         self.db.update_run(run_id, status="running", started_at=now, session_dir=str(session_dir))
         self.db.update_task(task["id"], status="in_progress")
 
-        workdir = Path(project["local_path"]).resolve() if project["local_path"] else None
+        workdir = self.settings.project_repo_path(project["slug"])
 
         # Setup git worktree
         if self.settings.use_git_worktrees and workdir and workdir.exists():

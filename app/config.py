@@ -45,6 +45,11 @@ class Settings(BaseSettings):
             return Path(self.worktree_root).resolve()
         return self.data_path() / "worktrees"
 
+    def project_repo_path(self, slug: str) -> Path:
+        """Canonical repo path for a project. This is the single source of truth —
+        never rely on stored local_path from the DB for file operations."""
+        return self.workspace_path() / slug
+
     def ensure_dirs(self) -> None:
         base = self.data_path()
         for sub in ["sessions", "logs"]:

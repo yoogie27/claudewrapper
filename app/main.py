@@ -71,6 +71,7 @@ async def settings_page(request: Request) -> Any:
     return templates.TemplateResponse(request, "settings.html", {
         "settings": settings,
         "projects": projects,
+        "workspace_path": settings.workspace_path(),
     })
 
 
@@ -100,9 +101,8 @@ async def create_project(request: Request) -> Any:
             i += 1
         slug = f"{slug}-{i}"
 
-    # Auto-assign workspace path
-    local_path = str(settings.workspace_path() / slug)
-    repo_path = Path(local_path)
+    # Auto-assign workspace path (always computed from slug, never stored as source of truth)
+    repo_path = settings.project_repo_path(slug)
     repo_path.mkdir(parents=True, exist_ok=True)
 
     # Clone from GitHub URL if provided and directory is empty
@@ -133,7 +133,7 @@ async def create_project(request: Request) -> Any:
         id=project_id,
         name=name,
         slug=slug,
-        local_path=local_path,
+        local_path=str(repo_path),
         base_branch=data.get("base_branch", "main") or "main",
         default_prompt=data.get("default_prompt", ""),
         github_repo_url=github_url,
@@ -523,8 +523,7 @@ async def diagnose_repo(project_id: str) -> Any:
     from app.git_worktree import parse_github_remote, get_default_branch, _run, GitWorktreeError
     import asyncio
 
-    local_path = project["local_path"]
-    repo = Path(local_path)
+    repo = settings.project_repo_path(project["slug"])
     checks = []
 
     # 1. Path exists
@@ -630,7 +629,7 @@ async def get_actions_status(project_id: str) -> Any:
         return {"runs": [], "error": "No GitHub token configured"}
 
     from app.git_worktree import parse_github_remote
-    repo_path = Path(project["local_path"])
+    repo_path = settings.project_repo_path(project["slug"])
     if not repo_path.exists():
         return {"runs": [], "error": "Repo path not found"}
 

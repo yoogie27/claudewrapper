@@ -34,7 +34,7 @@
                     <strong>{{ p.name }}</strong>
                     <button class="btn btn-sm btn-secondary" onclick="checkRepo('{{ p.id }}', this)">Check</button>
                 </div>
-                <div class="diag-detail" style="font-size:12px;color:var(--text-muted)">{{ p.local_path }}</div>
+                <div class="diag-detail" style="font-size:12px;color:var(--text-muted)">{{ workspace_path }}/{{ p.slug }}</div>
                 <div class="repo-results" id="repo-{{ p.id }}"></div>
             </div>
             {% endfor %}
