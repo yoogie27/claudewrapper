@@ -29,6 +29,11 @@
     --input-bg: #ffffff;
     --input-border: #d1d5db;
     --code-bg: #1e1e2e;
+    --tool-bg: #f3f4f6;
+    --tool-text: #9ca3af;
+    --tool-text-active: #6b7280;
+    --tool-border: #e2e4e9;
+    --tool-scroll: rgba(0,0,0,.12);
     --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     --mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'SF Mono', monospace;
     --radius: 12px;
@@ -53,6 +58,11 @@ html.dark {
     --input-bg: #1a1b26;
     --input-border: #2a2b3d;
     --code-bg: #0d0e17;
+    --tool-bg: #16171f;
+    --tool-text: #6b7280;
+    --tool-text-active: #9ca3af;
+    --tool-border: rgba(255,255,255,.06);
+    --tool-scroll: rgba(255,255,255,.12);
     --accent-light: #2a1520;
     --success-bg: #052e16;
     --warning-bg: #451a03;
@@ -476,15 +486,15 @@ html.dark .task-item.active { background: #2a1520; }
 .tool-calls-container {
     max-height: 120px;
     overflow-y: auto;
-    background: var(--code-bg);
+    background: var(--tool-bg);
     border-radius: var(--radius-sm);
     padding: 6px 10px;
     margin-top: 8px;
     font-family: var(--mono);
     font-size: 11px;
     line-height: 1.6;
-    color: var(--text-dim);
-    border: 1px solid rgba(255,255,255,.06);
+    color: var(--tool-text);
+    border: 1px solid var(--tool-border);
 }
 .tool-call-row {
     white-space: nowrap;
@@ -493,9 +503,9 @@ html.dark .task-item.active { background: #2a1520; }
     padding: 1px 0;
     opacity: .7;
 }
-.tool-call-row:last-child { opacity: 1; color: var(--text-muted); }
+.tool-call-row:last-child { opacity: 1; color: var(--tool-text-active); }
 .tool-calls-container::-webkit-scrollbar { width: 4px; }
-.tool-calls-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 2px; }
+.tool-calls-container::-webkit-scrollbar-thumb { background: var(--tool-scroll); border-radius: 2px; }
 
 /* Also style tool blockquotes in saved messages more densely */
 .message-assistant .message-content blockquote {
