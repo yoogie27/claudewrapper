@@ -661,16 +661,34 @@ html.dark .task-item.active { background: #2a1520; }
 }
 
 .message-system {
-    align-self: center;
-    max-width: 90%;
+    align-self: stretch;
+    max-width: 100%;
 }
 .message-system .message-bubble {
-    background: var(--card-hover);
-    color: var(--text-muted);
     border-radius: var(--radius-sm);
     font-size: 13px;
-    text-align: center;
+    padding: 10px 14px;
 }
+.message-system-info .message-bubble {
+    background: var(--info-bg);
+    color: var(--info);
+    border-left: 3px solid var(--info);
+}
+.message-system-error .message-bubble {
+    background: var(--error-bg);
+    color: var(--error);
+    border-left: 3px solid var(--error);
+}
+.message-system .message-content strong { font-weight: 700; }
+.message-system .message-content a { color: inherit; text-decoration: underline; }
+.message-system .message-content code {
+    background: rgba(0,0,0,.1);
+    color: inherit;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: .85em;
+}
+html.dark .message-system .message-content code { background: rgba(255,255,255,.1); }
 
 .message-meta {
     font-size: 11px;

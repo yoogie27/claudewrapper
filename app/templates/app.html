@@ -456,6 +456,19 @@ function renderMessages() {
 function renderMessage(msg) {
     const isUser = msg.role === 'user';
     const isSystem = msg.role === 'system';
+
+    if (isSystem) {
+        const content = renderMarkdown(msg.content);
+        const isError = msg.content.includes('failed') || msg.content.includes('Failed') || msg.content.includes('error');
+        return `
+            <div class="message message-system ${isError ? 'message-system-error' : 'message-system-info'}">
+                <div class="message-bubble">
+                    <div class="message-content">${content}</div>
+                </div>
+            </div>
+        `;
+    }
+
     const content = isUser ? esc(msg.content).replace(/\n/g, '<br>') : renderMarkdown(msg.content);
     const cost = msg.metadata?.cost_usd;
     const costHtml = cost && cost > 0 ? `<span class="msg-cost">$${cost.toFixed(4)}</span>` : '';

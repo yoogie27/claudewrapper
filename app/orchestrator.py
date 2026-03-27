@@ -261,10 +261,18 @@ class Orchestrator:
 
         # Try to create PR if there are commits
         if exit_code == 0 and self.settings.github_token:
-            pr_url = await self._maybe_create_pr(task, session_dir, identifier,
-                                                  base_branch=project.get("base_branch", ""))
+            pr_url, pr_error = await self._maybe_create_pr(task, session_dir, identifier,
+                                                            base_branch=project.get("base_branch", ""))
             if pr_url:
                 self.db.update_task(task["id"], pr_url=pr_url, status="in_review")
+                # Tell the user about the PR
+                pr_msg_id = uuid.uuid4().hex
+                self.db.create_message(pr_msg_id, task["id"], "system",
+                                       f"Pull request created: [{pr_url}]({pr_url})")
+            elif pr_error:
+                # Surface the PR failure in chat so the user sees it
+                err_msg_id = uuid.uuid4().hex
+                self.db.create_message(err_msg_id, task["id"], "system", pr_error)
 
         self.logger.info("[%s] Run %s complete (status=%s, cost=$%.4f)",
                          identifier, run_id, status, cost_usd)
@@ -436,12 +444,13 @@ class Orchestrator:
     # ── PR Management ──
 
     async def _maybe_create_pr(self, task: dict, session_dir: Path, identifier: str,
-                                base_branch: str = "") -> str | None:
+                                base_branch: str = "") -> tuple[str | None, str | None]:
+        """Try to push and create a PR. Returns (pr_url, error_message)."""
         if not self.settings.github_token:
-            return None
+            return None, None
         meta = read_worktree_meta(session_dir)
         if not meta:
-            return None
+            return None, None
 
         repo = Path(meta["repo"])
         worktree = Path(meta["worktree"])
@@ -455,22 +464,29 @@ class Orchestrator:
             count = 0
 
         if count == 0:
-            return None
+            return None, None
 
         github_info = parse_github_remote(repo)
         if not github_info:
-            return None
+            return None, None
         owner, repo_name = github_info
 
         ssh_env = self._get_git_ssh_env()
         try:
             await asyncio.to_thread(push_branch, worktree, branch, ssh_env)
         except GitPushError as exc:
+            error_hints = {
+                "auth": "SSH authentication failed. Check your deploy key or switch to HTTPS.",
+                "host_key": "SSH host key verification failed. Check known_hosts.",
+                "network": "Cannot reach remote. Check network connectivity.",
+            }
+            hint = error_hints.get(exc.error_type, "")
+            msg = f"Git push failed: {exc}" + (f"\n\n{hint}" if hint else "")
             self.logger.error("[%s] Git push FAILED (%s): %s", identifier, exc.error_type, exc)
-            return None
+            return None, msg
         except Exception as exc:
             self.logger.error("[%s] Git push FAILED: %s", identifier, exc)
-            return None
+            return None, f"Git push failed: {exc}"
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -488,7 +504,7 @@ class Orchestrator:
                 if existing_resp.status_code == 200:
                     existing_prs = existing_resp.json()
                     if existing_prs:
-                        return existing_prs[0].get("html_url")
+                        return existing_prs[0].get("html_url"), None
 
                 resp = await client.post(
                     f"https://api.github.com/repos/{owner}/{repo_name}/pulls",
@@ -501,12 +517,38 @@ class Orchestrator:
                     },
                 )
                 if resp.status_code in (200, 201):
-                    return resp.json().get("html_url")
-                self.logger.warning("PR creation failed: %s %s", resp.status_code, resp.text[:200])
+                    return resp.json().get("html_url"), None
+
+                # Build a helpful error message based on status code
+                status = resp.status_code
+                body = resp.text[:300]
+                self.logger.warning("PR creation failed: %s %s", status, body)
+
+                if status == 403:
+                    gh_msg = "**PR creation failed (403 Forbidden)**\n\n"
+                    if "personal access token" in body.lower():
+                        gh_msg += "Your GitHub token doesn't have permission to create PRs on this repo.\n\n"
+                        gh_msg += "**How to fix:**\n"
+                        gh_msg += "- **Fine-grained token:** Enable *Pull requests: Read and write* permission\n"
+                        gh_msg += "- **Classic token:** Enable the `repo` scope\n"
+                        gh_msg += "- **Org with SSO:** Authorize the token for your organization (token settings > Configure SSO)\n\n"
+                        gh_msg += "Go to Settings > GitHub Integration for diagnostics."
+                    else:
+                        gh_msg += f"`{body[:200]}`"
+                    return None, gh_msg
+                elif status == 404:
+                    return None, ("**PR creation failed (404 Not Found)**\n\n"
+                                  "The repo was not found via the GitHub API. This usually means:\n"
+                                  "- The token doesn't have access to this repo\n"
+                                  "- For org repos with SSO: authorize the token for the organization\n\n"
+                                  "Go to Settings > GitHub Integration for diagnostics.")
+                elif status == 422:
+                    return None, f"**PR creation failed (422)**\n\nGitHub rejected the PR: `{body[:200]}`"
+                else:
+                    return None, f"**PR creation failed ({status})**\n\n`{body[:200]}`"
         except Exception as exc:
             self.logger.warning("PR creation error: %s", exc)
-
-        return None
+            return None, f"**PR creation failed**\n\n`{exc}`"
 
     async def _merge_github_pr(self, pr_url: str) -> bool:
         if not self.settings.github_token:
