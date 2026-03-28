@@ -356,8 +356,12 @@ async def send_message(task_id: str, request: Request) -> Any:
     if not task:
         return JSONResponse({"error": "Task not found"}, 404)
 
+    # Check if task already has an active run (message will be queued)
+    active = db.get_active_run_for_task(task_id)
+    queued = active is not None
+
     run = await orchestrator.enqueue_message(task_id, content)
-    return {"ok": True, "run_id": run["id"], "task_id": task_id}
+    return {"ok": True, "run_id": run["id"], "task_id": task_id, "queued": queued}
 
 
 def _parse_sse_line(line: str):
@@ -391,23 +395,39 @@ def _parse_sse_line(line: str):
 
 @app.get("/api/tasks/{task_id}/stream")
 async def stream_task(task_id: str) -> Any:
-    """SSE endpoint for live Claude output on a task's latest run."""
-    run = db.get_latest_run(task_id)
-    if not run:
-        return PlainTextResponse("No runs found", status_code=404)
-
-    run_id = run["id"]
+    """SSE endpoint for live Claude output on a task.
+    Follows active runs until all complete, supporting queued messages."""
 
     async def generate():
+        current_run_id = None
         pos = 0
         line_buffer = ""
-        while True:
-            current_run = db.get_run(run_id)
-            if not current_run:
-                yield "event: done\ndata: {}\n\n"
-                return
+        idle = 0
 
-            session_dir = current_run.get("session_dir")
+        while True:
+            # Find the current active run for this task (running > oldest pending)
+            active = db.get_active_run_for_task(task_id)
+
+            if not active:
+                idle += 1
+                if idle > 10:  # 5s with no active run → done
+                    yield "event: done\ndata: {}\n\n"
+                    return
+                await asyncio.sleep(0.5)
+                continue
+
+            idle = 0
+
+            # Switched to a different run? Signal previous run complete, reset read state
+            if active["id"] != current_run_id:
+                if current_run_id is not None:
+                    yield f"event: run_complete\ndata: {{}}\n\n"
+                current_run_id = active["id"]
+                pos = 0
+                line_buffer = ""
+
+            # Read output from this run's stdout file
+            session_dir = active.get("session_dir")
             if session_dir:
                 stdout_path = Path(session_dir) / "stdout.txt"
                 if stdout_path.exists():
@@ -416,7 +436,6 @@ async def stream_task(task_id: str) -> Any:
                         if len(raw) > pos:
                             chunk = raw[pos:]
                             pos = len(raw)
-                            # Only process complete lines (avoid partial JSON)
                             chunk = line_buffer + chunk
                             if chunk.endswith("\n"):
                                 lines = chunk.splitlines()
@@ -430,13 +449,19 @@ async def stream_task(task_id: str) -> Any:
                     except Exception:
                         pass
 
-            if current_run["status"] not in ("pending", "running"):
+            # Re-check this run's status (may have finished since we read active)
+            current = db.get_run(current_run_id)
+            if current and current["status"] not in ("pending", "running"):
                 # Flush remaining buffer
                 if line_buffer.strip():
                     for event, data in _parse_sse_line(line_buffer):
                         yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
-                yield "event: done\ndata: {}\n\n"
-                return
+                # Don't exit — loop back to check for more queued runs
+                current_run_id = None
+                pos = 0
+                line_buffer = ""
+                await asyncio.sleep(1)
+                continue
 
             await asyncio.sleep(0.5)
 

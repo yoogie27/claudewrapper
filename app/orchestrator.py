@@ -134,6 +134,12 @@ class Orchestrator:
         self.db.update_run(run_id, status="running", started_at=now, session_dir=str(session_dir))
         self.db.update_task(task["id"], status="in_progress")
 
+        # Consolidate: cancel other pending runs for the same task.
+        # Their messages are already in the DB and will be included in this run's prompt.
+        consolidated = self.db.consolidate_pending_runs(task["id"], run_id)
+        if consolidated:
+            self.logger.info("[%s] Consolidated %d queued runs into run %s", identifier, consolidated, run_id)
+
         workdir = self.settings.project_repo_path(project["slug"])
 
         # Setup git worktree

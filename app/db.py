@@ -224,16 +224,20 @@ class Database:
         return dict(row) if row else None
 
     def list_tasks(self, project_id: str, status: str | None = None) -> list[dict]:
-        if status:
-            rows = self._conn.execute(
-                "SELECT * FROM tasks WHERE project_id=? AND status=? ORDER BY created_at DESC",
-                (project_id, status),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT * FROM tasks WHERE project_id=? ORDER BY created_at DESC",
-                (project_id,),
-            ).fetchall()
+        # Sort by latest message activity (tasks with recent messages float to top)
+        status_filter = "AND t.status=?" if status else ""
+        params: tuple = (project_id, status) if status else (project_id,)
+        rows = self._conn.execute(
+            f"""SELECT t.*,
+                       MAX(m.created_at) as last_message_at,
+                       COUNT(m.id) as message_count
+                FROM tasks t
+                LEFT JOIN messages m ON m.task_id = t.id
+                WHERE t.project_id=? {status_filter}
+                GROUP BY t.id
+                ORDER BY COALESCE(MAX(m.created_at), t.created_at) DESC""",
+            params,
+        ).fetchall()
         return [dict(r) for r in rows]
 
     def update_task(self, id: str, **kwargs) -> None:
@@ -339,6 +343,30 @@ class Database:
             (task_id,),
         ).fetchone()
         return row is not None
+
+    def get_active_run_for_task(self, task_id: str) -> dict | None:
+        """Get the current active run for a task: prefer running, then oldest pending."""
+        row = self._conn.execute(
+            "SELECT * FROM runs WHERE task_id=? AND status='running' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if row:
+            return dict(row)
+        row = self._conn.execute(
+            "SELECT * FROM runs WHERE task_id=? AND status='pending' ORDER BY created_at ASC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def consolidate_pending_runs(self, task_id: str, keep_run_id: str) -> int:
+        """Cancel all pending runs for a task except the specified one.
+        Their messages are already in the DB and will be included in the kept run's prompt."""
+        result = self._conn.execute(
+            "UPDATE runs SET status='cancelled', ended_at=? WHERE task_id=? AND status='pending' AND id!=?",
+            (utc_now(), task_id, keep_run_id),
+        )
+        self._conn.commit()
+        return result.rowcount
 
     def list_runs(self, task_id: str) -> list[dict]:
         rows = self._conn.execute(

@@ -168,6 +168,7 @@ const state = {
     messages: [],
     streaming: false,
     streamSource: null,
+    streamingTaskId: null,
     taskFilter: 'all',
     modeLabels: {{ mode_labels | tojson }},
     modeColors: {{ mode_colors | tojson }},
@@ -266,8 +267,29 @@ async function loadTasks() {
     if (!state.currentProject) return;
     const resp = await fetch(`/api/projects/${state.currentProject.id}/tasks`);
     state.tasks = await resp.json();
+    // Seed status tracking for background completion detection
+    _prevTaskStatuses = {};
+    state.tasks.forEach(t => { _prevTaskStatuses[t.id] = t.status; });
+    _lastTasksHash = state.tasks.map(t => `${t.id}:${t.status}:${t.total_cost_usd}:${t.message_count||0}`).join('|');
     renderTasks();
     updateFilterCounts();
+}
+
+// ── Unread Tracking ──
+// Stores { taskId: messageCount } of last-seen counts in localStorage
+function _getSeenCounts() {
+    try { return JSON.parse(localStorage.getItem('cw-seen') || '{}'); } catch { return {}; }
+}
+function _markSeen(taskId, count) {
+    const seen = _getSeenCounts();
+    seen[taskId] = count;
+    localStorage.setItem('cw-seen', JSON.stringify(seen));
+}
+function _getUnread(task) {
+    const seen = _getSeenCounts();
+    const total = task.message_count || 0;
+    const lastSeen = seen[task.id] || 0;
+    return Math.max(0, total - lastSeen);
 }
 
 function renderTasks() {
@@ -280,18 +302,48 @@ function renderTasks() {
         el.innerHTML = '<div class="empty-hint">No tasks yet.<br>Click + to create one.</div>';
         return;
     }
-    el.innerHTML = tasks.map(t => `
+
+    // FLIP animation: capture current positions
+    const oldPositions = {};
+    el.querySelectorAll('.task-item[data-id]').forEach(node => {
+        oldPositions[node.dataset.id] = node.getBoundingClientRect();
+    });
+
+    // Render new list
+    el.innerHTML = tasks.map(t => {
+        const unread = _getUnread(t);
+        const unreadBadge = unread > 0 && state.currentTask?.id !== t.id
+            ? `<span class="task-unread">${unread}</span>` : '';
+        return `
         <div class="task-item ${state.currentTask?.id === t.id ? 'active' : ''} task-status-${t.status}"
+             data-id="${t.id}"
              onclick="selectTask('${t.id}')"
              oncontextmenu="event.preventDefault();showCtx(event, 'task', '${t.id}', '${escAttr(t.title)}')">
             <div class="task-item-header">
                 <span class="mode-dot" style="background:${state.modeColors[t.mode] || '#e11d48'}"></span>
                 <span class="task-item-id">${esc(t.identifier)}</span>
                 <span class="badge badge-${t.status}">${t.status.replace('_', ' ')}</span>
+                ${unreadBadge}
             </div>
             <div class="task-item-title">${esc(t.title)}</div>
         </div>
-    `).join('');
+    `}).join('');
+
+    // FLIP animation: animate from old to new positions
+    el.querySelectorAll('.task-item[data-id]').forEach(node => {
+        const id = node.dataset.id;
+        const oldRect = oldPositions[id];
+        if (!oldRect) return; // new item, skip
+        const newRect = node.getBoundingClientRect();
+        const dy = oldRect.top - newRect.top;
+        if (Math.abs(dy) < 2) return; // didn't move
+        node.style.transform = `translateY(${dy}px)`;
+        node.style.transition = 'none';
+        requestAnimationFrame(() => {
+            node.style.transition = 'transform .35s ease';
+            node.style.transform = '';
+        });
+    });
 }
 
 function filterTasks(status, btn) {
@@ -402,6 +454,8 @@ async function selectTask(id) {
     state.currentTask = state.tasks.find(t => t.id === id);
     if (!state.currentTask) return;
     localStorage.setItem('cw-task', id);
+    // Mark all messages as seen
+    _markSeen(id, state.currentTask.message_count || 0);
     renderTasks();
 
     // Update header
@@ -425,19 +479,36 @@ async function selectTask(id) {
     showPanel('chat');
 }
 
-async function loadMessages() {
+async function loadMessages(skipStreamReconnect) {
     if (!state.currentTask) return;
     const resp = await fetch(`/api/tasks/${state.currentTask.id}/messages`);
     state.messages = await resp.json();
+    // Mark as seen since user is viewing this task
+    _markSeen(state.currentTask.id, state.messages.length);
     renderMessages();
 
-    // Check if latest run is still running — connect stream
-    if (state.streamSource) { state.streamSource.close(); state.streamSource = null; }
+    if (skipStreamReconnect) return;
+
+    // If already streaming this task, don't reconnect
+    if (state.streamSource && state.streamingTaskId === state.currentTask.id) return;
+
+    // Close existing stream (different task or stale)
+    if (state.streamSource) {
+        state.streamSource.close();
+        state.streamSource = null;
+        state.streaming = false;
+        state.streamingTaskId = null;
+    }
+
+    // Check if this task has active runs — connect stream
     const runsResp = await fetch(`/api/tasks/${state.currentTask.id}/runs`);
     const runs = await runsResp.json();
-    const latestRun = runs[0];
-    if (latestRun && (latestRun.status === 'running' || latestRun.status === 'pending')) {
+    const hasActive = runs.some(r => r.status === 'running' || r.status === 'pending');
+    if (hasActive) {
         connectStream();
+    } else {
+        document.getElementById('typing-indicator').style.display = 'none';
+        document.getElementById('btn-send').disabled = false;
     }
 }
 
@@ -510,7 +581,7 @@ function renderMarkdown(text) {
 // ── Send Message ──
 let _sending = false;
 async function sendMessage() {
-    if (!state.currentTask || state.streaming || _sending) return;
+    if (!state.currentTask || _sending) return;
     const input = document.getElementById('chat-input');
     let content = input.value.trim();
     if (!content && !_pendingImages.length) return;
@@ -528,10 +599,21 @@ async function sendMessage() {
     input.value = '';
     autoResizeInput();
 
-    // Optimistically add user message
+    // Optimistically add user message to chat
     const now = new Date().toISOString();
-    state.messages.push({ role: 'user', content, created_at: now, metadata: {} });
-    renderMessages();
+    const msgObj = { role: 'user', content, created_at: now, metadata: {} };
+    state.messages.push(msgObj);
+
+    if (state.streaming) {
+        // Append message without re-rendering (preserves streaming display)
+        const msgHtml = renderMessage(msgObj);
+        const tmp = document.createElement('div');
+        tmp.innerHTML = msgHtml;
+        document.getElementById('chat-messages').appendChild(tmp.firstElementChild);
+        scrollToBottom();
+    } else {
+        renderMessages();
+    }
 
     // Send to server
     try {
@@ -542,7 +624,16 @@ async function sendMessage() {
         });
 
         if (resp.ok) {
-            connectStream();
+            const data = await resp.json();
+            if (data.queued) {
+                // Message queued behind an active run — stream is already connected
+                toast('Queued', 'Message queued — will be processed next', 'info');
+            } else if (!state.streamSource) {
+                // New run started and no stream active — connect
+                connectStream();
+            }
+            // Always re-enable send so user can queue more messages
+            document.getElementById('btn-send').disabled = false;
             setTimeout(loadTasks, 1000);
         } else {
             toast('Error', 'Failed to send message', 'error');
@@ -581,25 +672,40 @@ function connectStream() {
     if (state.streamSource) { state.streamSource.close(); }
 
     state.streaming = true;
+    state.streamingTaskId = state.currentTask.id;
     document.getElementById('typing-indicator').style.display = 'flex';
-    document.getElementById('btn-send').disabled = true;
 
-    // Add a placeholder assistant message for streaming (unique ID to avoid collisions)
-    const streamId = `stream-content-${++_streamCounter}`;
+    // Lazy-created assistant message placeholder (created on first text/tool event)
+    let streamEl = null;
     let streamText = '';
-    const streamEl = document.createElement('div');
-    streamEl.className = 'message message-assistant';
-    streamEl.innerHTML = `<div class="message-bubble"><div class="message-content" id="${streamId}"></div></div>`;
-    document.getElementById('chat-messages').appendChild(streamEl);
-    scrollToBottom();
+    let currentStreamId = null;
+    let toolContainer = null;
+
+    function ensureStreamEl() {
+        if (!streamEl) {
+            currentStreamId = `stream-content-${++_streamCounter}`;
+            streamText = '';
+            toolContainer = null;
+            streamEl = document.createElement('div');
+            streamEl.className = 'message message-assistant';
+            streamEl.innerHTML = `<div class="message-bubble"><div class="message-content" id="${currentStreamId}"></div></div>`;
+            document.getElementById('chat-messages').appendChild(streamEl);
+            scrollToBottom();
+        }
+    }
 
     const source = new EventSource(`/api/tasks/${state.currentTask.id}/stream`);
     state.streamSource = source;
 
+    // Guard: ignore events from stale EventSources after task switch
+    function isStale() { return state.streamSource !== source; }
+
     source.addEventListener('text', e => {
+        if (isStale()) return;
+        ensureStreamEl();
         const data = JSON.parse(e.data);
         streamText += data.text;
-        const contentEl = document.getElementById(streamId);
+        const contentEl = document.getElementById(currentStreamId);
         if (contentEl) {
             contentEl.innerHTML = renderMarkdown(streamText);
             highlightCode(contentEl);
@@ -607,11 +713,10 @@ function connectStream() {
         maybeScrollToBottom();
     });
 
-    // Tool calls rendered in a dense container separate from main text
-    let toolContainer = null;
     source.addEventListener('tool', e => {
+        if (isStale()) return;
+        ensureStreamEl();
         const data = JSON.parse(e.data);
-        // Create or find tool container inside the stream element
         if (!toolContainer) {
             toolContainer = document.createElement('div');
             toolContainer.className = 'tool-calls-container';
@@ -631,6 +736,7 @@ function connectStream() {
     });
 
     source.addEventListener('result', e => {
+        if (isStale() || !streamEl) return;
         const data = JSON.parse(e.data);
         if (data.cost_usd > 0) {
             const metaEl = streamEl.querySelector('.message-meta') || document.createElement('div');
@@ -640,16 +746,26 @@ function connectStream() {
         }
     });
 
+    // A run finished but more are queued — reset for next run's response
+    source.addEventListener('run_complete', () => {
+        if (isStale()) return;
+        streamEl = null;
+        streamText = '';
+        currentStreamId = null;
+        toolContainer = null;
+    });
+
     source.addEventListener('done', () => {
+        if (isStale()) return;
         state.streaming = false;
+        state.streamingTaskId = null;
         source.close();
         state.streamSource = null;
         document.getElementById('typing-indicator').style.display = 'none';
         document.getElementById('btn-send').disabled = false;
-        // Reload everything to get final DB state
-        loadMessages().then(() => {
+        // Reload from DB to get final state (skip stream reconnect — we just got done)
+        loadMessages(true).then(() => {
             loadTasks().then(() => {
-                // Re-find the current task with updated status
                 if (state.currentTask) {
                     state.currentTask = state.tasks.find(t => t.id === state.currentTask.id) || state.currentTask;
                     updateChatActions();
@@ -660,7 +776,9 @@ function connectStream() {
     });
 
     source.onerror = () => {
+        if (isStale()) return;
         state.streaming = false;
+        state.streamingTaskId = null;
         source.close();
         state.streamSource = null;
         document.getElementById('typing-indicator').style.display = 'none';
@@ -723,6 +841,7 @@ async function cancelRun() {
         toast('Cancelled', 'Run cancelled', 'info');
         if (state.streamSource) { state.streamSource.close(); state.streamSource = null; }
         state.streaming = false;
+        state.streamingTaskId = null;
         document.getElementById('typing-indicator').style.display = 'none';
         document.getElementById('btn-send').disabled = false;
         setTimeout(() => { loadMessages(); loadTasks(); }, 500);
@@ -941,6 +1060,23 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 });
 
+// Remove collapsed class when entering mobile layout so panels aren't hidden
+let _wasMobile = window.innerWidth <= 768;
+window.addEventListener('resize', () => {
+    const isMobile = window.innerWidth <= 768;
+    if (isMobile && !_wasMobile) {
+        // Crossed from desktop to mobile — uncollapse sidebars
+        ['projects', 'tasks'].forEach(w => {
+            document.getElementById(`panel-${w}`).classList.remove('collapsed');
+        });
+        // Ensure a panel is visible
+        if (!document.querySelector('.panel.panel-active')) {
+            showPanel(state.currentTask ? 'chat' : state.currentProject ? 'tasks' : 'projects');
+        }
+    }
+    _wasMobile = isMobile;
+});
+
 // ── Context Menu ──
 let _longPressTimer = null;
 function showCtx(event, type, id, name, hasGit) {
@@ -1006,17 +1142,33 @@ document.addEventListener('keydown', e => {
     }
 });
 
-// ── Auto-refresh (only re-render if data changed) ──
+// ── Auto-refresh (always polls, even during streaming) ──
 let _lastTasksHash = '';
+let _prevTaskStatuses = {};
 setInterval(async () => {
-    if (!state.currentProject || state.streaming) return;
+    if (!state.currentProject) return;
     const resp = await fetch(`/api/projects/${state.currentProject.id}/tasks`);
     if (!resp.ok) return;
     const newTasks = await resp.json();
     // Quick hash: compare status+cost of each task
-    const hash = newTasks.map(t => `${t.id}:${t.status}:${t.total_cost_usd}`).join('|');
+    const hash = newTasks.map(t => `${t.id}:${t.status}:${t.total_cost_usd}:${t.message_count||0}`).join('|');
     if (hash === _lastTasksHash) return;
     _lastTasksHash = hash;
+
+    // Detect background task completions (not the task we're actively streaming)
+    newTasks.forEach(t => {
+        const prev = _prevTaskStatuses[t.id];
+        if (prev && prev !== t.status && !(state.streaming && t.id === state.streamingTaskId)) {
+            if (t.status === 'done' || t.status === 'in_review') {
+                toast('Complete', `${t.identifier} finished`, 'success');
+            } else if (t.status === 'failed') {
+                toast('Failed', `${t.identifier} failed`, 'error');
+            }
+        }
+    });
+    _prevTaskStatuses = {};
+    newTasks.forEach(t => { _prevTaskStatuses[t.id] = t.status; });
+
     state.tasks = newTasks;
     renderTasks();
     updateFilterCounts();
@@ -1024,9 +1176,14 @@ setInterval(async () => {
     if (state.currentTask) {
         const updated = state.tasks.find(t => t.id === state.currentTask.id);
         if (updated) {
+            const statusChanged = state.currentTask.status !== updated.status;
             state.currentTask = updated;
             updateChatActions();
             updateChatHeader();
+            // If task status changed and we're not streaming it, reload messages
+            if (statusChanged && !(state.streaming && state.streamingTaskId === updated.id)) {
+                loadMessages();
+            }
         }
     }
 }, 5000);
