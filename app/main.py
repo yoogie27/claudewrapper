@@ -21,10 +21,14 @@ from app.db import Database
 from app.orchestrator import Orchestrator
 from app.task_modes import detect_mode, MODE_LABELS, MODE_COLORS
 from app.ssh import setup_ssh
+from app.prompt_seeds import BUILTIN_PROMPTS
 
 
 db = Database(settings.data_path() / "app.db")
 orchestrator = Orchestrator(settings, db)
+
+# Seed built-in prompts on import (idempotent)
+db.seed_prompts(BUILTIN_PROMPTS)
 
 
 @asynccontextmanager
@@ -791,6 +795,69 @@ async def get_actions_status(project_id: str) -> Any:
             return {"runs": runs, "repo": f"{owner}/{repo_name}"}
     except Exception as exc:
         return {"runs": [], "error": str(exc)}
+
+
+# ── Prompt Library API ──
+
+@app.get("/api/prompts")
+async def list_prompts(category: str | None = None) -> Any:
+    return db.list_prompts(category)
+
+
+@app.post("/api/prompts")
+async def create_prompt(request: Request) -> Any:
+    data = await request.json()
+    slash_command = data.get("slash_command", "").strip().lstrip("/")
+    title = data.get("title", "").strip()
+    prompt = data.get("prompt", "").strip()
+    if not slash_command or not title or not prompt:
+        return JSONResponse({"error": "slash_command, title, and prompt are required"}, 400)
+    # Validate slug format
+    if not re.match(r"^[a-z0-9][a-z0-9-]*$", slash_command):
+        return JSONResponse({"error": "Slash command must be lowercase alphanumeric with hyphens"}, 400)
+    if db.get_prompt_by_command(slash_command):
+        return JSONResponse({"error": f"/{slash_command} already exists"}, 409)
+
+    prompt_id = uuid.uuid4().hex
+    result = db.create_prompt(
+        id=prompt_id,
+        slash_command=slash_command,
+        title=title,
+        prompt=prompt,
+        description=data.get("description", ""),
+        category=data.get("category", "general"),
+    )
+    return result
+
+
+@app.put("/api/prompts/{prompt_id}")
+async def update_prompt(prompt_id: str, request: Request) -> Any:
+    existing = db.get_prompt(prompt_id)
+    if not existing:
+        return JSONResponse({"error": "Not found"}, 404)
+    data = await request.json()
+    allowed = {"title", "description", "prompt", "category", "slash_command"}
+    updates = {k: v for k, v in data.items() if k in allowed and v is not None}
+    if "slash_command" in updates:
+        cmd = updates["slash_command"].strip().lstrip("/")
+        if not re.match(r"^[a-z0-9][a-z0-9-]*$", cmd):
+            return JSONResponse({"error": "Slash command must be lowercase alphanumeric with hyphens"}, 400)
+        other = db.get_prompt_by_command(cmd)
+        if other and other["id"] != prompt_id:
+            return JSONResponse({"error": f"/{cmd} already exists"}, 409)
+        updates["slash_command"] = cmd
+    if updates:
+        db.update_prompt(prompt_id, **updates)
+    return db.get_prompt(prompt_id)
+
+
+@app.delete("/api/prompts/{prompt_id}")
+async def delete_prompt(prompt_id: str) -> Any:
+    existing = db.get_prompt(prompt_id)
+    if not existing:
+        return JSONResponse({"error": "Not found"}, 404)
+    db.delete_prompt(prompt_id)
+    return {"ok": True}
 
 
 # ── Mode Detection API ──

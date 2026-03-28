@@ -82,6 +82,21 @@ CREATE TABLE IF NOT EXISTS config (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS prompt_library (
+    id TEXT PRIMARY KEY,
+    slash_command TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    prompt TEXT NOT NULL,
+    category TEXT DEFAULT 'general',
+    is_builtin INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_library_command ON prompt_library(slash_command);
+CREATE INDEX IF NOT EXISTS idx_prompt_library_category ON prompt_library(category);
 """
 
 
@@ -423,6 +438,67 @@ class Database:
             (f"-{days} days",),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── Prompt Library ──
+
+    def list_prompts(self, category: str | None = None) -> list[dict]:
+        if category:
+            rows = self._conn.execute(
+                "SELECT * FROM prompt_library WHERE category=? ORDER BY title",
+                (category,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM prompt_library ORDER BY category, title"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_prompt(self, id: str) -> dict | None:
+        row = self._conn.execute("SELECT * FROM prompt_library WHERE id = ?", (id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_prompt_by_command(self, slash_command: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM prompt_library WHERE slash_command = ?", (slash_command,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def create_prompt(self, id: str, slash_command: str, title: str,
+                      prompt: str, description: str = "", category: str = "general",
+                      is_builtin: bool = False) -> dict:
+        now = utc_now()
+        self._conn.execute(
+            """INSERT INTO prompt_library(id, slash_command, title, description, prompt, category, is_builtin, created_at, updated_at)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (id, slash_command, title, description, prompt, category, int(is_builtin), now, now),
+        )
+        self._conn.commit()
+        return self.get_prompt(id)  # type: ignore
+
+    def update_prompt(self, id: str, **kwargs) -> None:
+        kwargs["updated_at"] = utc_now()
+        sets = ", ".join(f"{k}=?" for k in kwargs)
+        vals = list(kwargs.values()) + [id]
+        self._conn.execute(f"UPDATE prompt_library SET {sets} WHERE id=?", vals)
+        self._conn.commit()
+
+    def delete_prompt(self, id: str) -> None:
+        self._conn.execute("DELETE FROM prompt_library WHERE id=?", (id,))
+        self._conn.commit()
+
+    def seed_prompts(self, prompts: list[dict]) -> int:
+        """Insert builtin prompts that don't already exist. Returns count of inserted."""
+        count = 0
+        for p in prompts:
+            existing = self.get_prompt_by_command(p["slash_command"])
+            if not existing:
+                self.create_prompt(
+                    id=p["id"], slash_command=p["slash_command"], title=p["title"],
+                    prompt=p["prompt"], description=p.get("description", ""),
+                    category=p.get("category", "general"), is_builtin=True,
+                )
+                count += 1
+        return count
 
     # ── Cleanup ──
 

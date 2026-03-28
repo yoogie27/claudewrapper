@@ -97,11 +97,12 @@
         <div class="chat-input-area" id="chat-input-area" style="display:none">
             <!-- Image preview strip -->
             <div class="attach-preview" id="attach-preview" style="display:none"></div>
+            <div class="slash-menu" id="slash-menu" style="display:none"></div>
             <div class="chat-input-wrap">
                 <button class="btn-attach" onclick="document.getElementById('file-upload').click()" title="Attach image">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
                 </button>
-                <textarea id="chat-input" placeholder="Send a message to Claude..." rows="1"></textarea>
+                <textarea id="chat-input" placeholder="Type / for prompt library..." rows="1"></textarea>
                 <button class="btn-send" id="btn-send" onclick="sendMessage()" title="Send (Enter)">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
                 </button>
@@ -1128,6 +1129,116 @@ document.addEventListener('DOMContentLoaded', () => {
         container.addEventListener('touchend', () => clearTimeout(_longPressTimer));
         container.addEventListener('touchmove', () => clearTimeout(_longPressTimer));
     });
+});
+
+// ── Prompt Library / Slash Commands ──
+let _promptLibrary = [];
+let _slashMenuIdx = -1;
+
+async function loadPromptLibrary() {
+    try {
+        const resp = await fetch('/api/prompts');
+        if (resp.ok) _promptLibrary = await resp.json();
+    } catch {}
+}
+
+function getSlashMatches(query) {
+    const q = query.toLowerCase();
+    return _promptLibrary.filter(p =>
+        p.slash_command.includes(q) || p.title.toLowerCase().includes(q) || p.description.toLowerCase().includes(q)
+    ).slice(0, 10);
+}
+
+function showSlashMenu(matches) {
+    const menu = document.getElementById('slash-menu');
+    if (!matches.length) { hideSlashMenu(); return; }
+    _slashMenuIdx = 0;
+    const categoryLabels = {
+        'code-quality': 'Code Quality', 'architecture': 'Architecture', 'security': 'Security',
+        'bugs': 'Bugs', 'testing': 'Testing', 'documentation': 'Docs', 'performance': 'Performance',
+        'review': 'Review', 'devops': 'DevOps', 'general': 'General',
+    };
+    menu.innerHTML = matches.map((p, i) => `
+        <div class="slash-item ${i === 0 ? 'active' : ''}" data-idx="${i}" onmousedown="selectSlashItem(${i})" onmouseenter="_slashMenuIdx=${i};highlightSlashItem()">
+            <div class="slash-item-header">
+                <span class="slash-cmd">/${esc(p.slash_command)}</span>
+                <span class="slash-cat">${categoryLabels[p.category] || p.category}</span>
+            </div>
+            <div class="slash-item-title">${esc(p.title)}</div>
+            <div class="slash-item-desc">${esc(p.description)}</div>
+        </div>
+    `).join('');
+    menu.style.display = 'block';
+}
+
+function hideSlashMenu() {
+    const menu = document.getElementById('slash-menu');
+    menu.style.display = 'none';
+    _slashMenuIdx = -1;
+}
+
+function highlightSlashItem() {
+    const menu = document.getElementById('slash-menu');
+    menu.querySelectorAll('.slash-item').forEach((el, i) => {
+        el.classList.toggle('active', i === _slashMenuIdx);
+        if (i === _slashMenuIdx) el.scrollIntoView({ block: 'nearest' });
+    });
+}
+
+function selectSlashItem(idx) {
+    const input = document.getElementById('chat-input');
+    const matches = _currentSlashMatches || [];
+    const p = matches[idx];
+    if (!p) return;
+    input.value = p.prompt;
+    hideSlashMenu();
+    autoResizeInput();
+    input.focus();
+}
+
+let _currentSlashMatches = [];
+
+function handleSlashInput() {
+    const input = document.getElementById('chat-input');
+    const val = input.value;
+    // Only trigger when line starts with / and cursor is on the first line
+    if (val.startsWith('/') && !val.includes('\n')) {
+        const query = val.slice(1);
+        _currentSlashMatches = getSlashMatches(query);
+        showSlashMenu(_currentSlashMatches);
+    } else {
+        hideSlashMenu();
+        _currentSlashMatches = [];
+    }
+}
+
+// Hook into chat input events
+document.addEventListener('DOMContentLoaded', () => {
+    const input = document.getElementById('chat-input');
+    input.addEventListener('input', handleSlashInput);
+    input.addEventListener('keydown', e => {
+        const menu = document.getElementById('slash-menu');
+        if (menu.style.display === 'none') return;
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            _slashMenuIdx = Math.min(_slashMenuIdx + 1, _currentSlashMatches.length - 1);
+            highlightSlashItem();
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            _slashMenuIdx = Math.max(_slashMenuIdx - 1, 0);
+            highlightSlashItem();
+        } else if (e.key === 'Enter' && !e.shiftKey && _slashMenuIdx >= 0) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            selectSlashItem(_slashMenuIdx);
+        } else if (e.key === 'Escape') {
+            hideSlashMenu();
+        } else if (e.key === 'Tab' && _slashMenuIdx >= 0) {
+            e.preventDefault();
+            selectSlashItem(_slashMenuIdx);
+        }
+    });
+    loadPromptLibrary();
 });
 
 // ── Keyboard shortcuts ──

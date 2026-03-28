@@ -884,6 +884,7 @@ html.dark .message-system .message-content code { background: rgba(255,255,255,.
 
 /* ── Chat Input ──────────────────────────────────────── */
 .chat-input-area {
+    position: relative;
     padding: 12px 16px;
     padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     border-top: 1px solid var(--panel-border);
@@ -1423,4 +1424,65 @@ tr:last-child td { border-bottom: none; }
     table { min-width: 500px; }
     .settings-row { flex-direction: column; gap: 2px; }
     .settings-row .value { word-break: break-all; }
+}
+
+/* ── Slash Command Menu ──────────────────────────────── */
+.slash-menu {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    max-height: 320px;
+    overflow-y: auto;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+    box-shadow: var(--shadow-lg);
+    z-index: 100;
+    padding: 4px 0;
+}
+.slash-item {
+    padding: 8px 14px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: background .1s;
+}
+.slash-item:last-child { border-bottom: none; }
+.slash-item:hover, .slash-item.active {
+    background: var(--card-hover);
+}
+.slash-item-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 2px;
+}
+.slash-cmd {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+}
+.slash-cat {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--text-dim);
+    background: var(--bg);
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+.slash-item-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+}
+.slash-item-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
