@@ -167,6 +167,97 @@ BUILTIN_PROMPTS: list[dict] = [
             "Implement all changes directly. Each hardening measure should be minimal and focused — don't add unnecessary complexity."
         ),
     },
+    {
+        "id": _id("owasp"),
+        "slash_command": "owasp",
+        "title": "OWASP Top 10 Audit",
+        "description": "Check against OWASP Top 10 web application security risks",
+        "category": "security",
+        "prompt": (
+            "Audit this codebase against the OWASP Top 10 (2021) web application security risks:\n\n"
+            "1. **A01: Broken Access Control** — missing authorization checks, IDOR, CORS misconfiguration, forced browsing to unauthenticated pages, privilege escalation.\n"
+            "2. **A02: Cryptographic Failures** — sensitive data transmitted in cleartext, weak algorithms (MD5/SHA1 for passwords), missing encryption at rest, hardcoded secrets.\n"
+            "3. **A03: Injection** — SQL injection, command injection, LDAP injection, XSS, template injection. Trace all user input to dangerous sinks.\n"
+            "4. **A04: Insecure Design** — missing rate limiting, no defense in depth, trust boundary violations, missing threat modeling for critical flows.\n"
+            "5. **A05: Security Misconfiguration** — default credentials, unnecessary features enabled, overly permissive cloud/firewall rules, missing security headers, verbose error messages.\n"
+            "6. **A06: Vulnerable & Outdated Components** — known CVEs in dependencies, unmaintained libraries, components with unnecessary privileges.\n"
+            "7. **A07: Identification & Authentication Failures** — weak passwords allowed, missing brute-force protection, session fixation, credential stuffing exposure.\n"
+            "8. **A08: Software & Data Integrity Failures** — unsigned updates, insecure deserialization, CI/CD pipeline security, untrusted plugins/extensions.\n"
+            "9. **A09: Security Logging & Monitoring Failures** — missing audit logs, unlogged auth failures, no alerting for suspicious activity, logs not protected from tampering.\n"
+            "10. **A10: Server-Side Request Forgery (SSRF)** — URL fetching without validation, internal network access via user-controlled URLs, DNS rebinding.\n\n"
+            "For each category, state whether the codebase is affected, provide evidence, and rate severity. Fix Critical and High issues directly."
+        ),
+    },
+    {
+        "id": _id("secrets-scan"),
+        "slash_command": "secrets",
+        "title": "Secrets & Credentials Scan",
+        "description": "Find hardcoded secrets, API keys, tokens, and passwords",
+        "category": "security",
+        "prompt": (
+            "Scan this codebase for exposed secrets and credentials:\n\n"
+            "1. **Hardcoded credentials** — passwords, API keys, tokens, connection strings embedded in source code, config files, or comments.\n"
+            "2. **Environment leaks** — .env files committed to git, environment variables logged or exposed in error messages, secrets in CI/CD configs.\n"
+            "3. **Git history** — check for secrets that were previously committed and later removed (they're still in history). Use `git log -p --all -S 'password\\|secret\\|api_key\\|token'`.\n"
+            "4. **Config files** — check all YAML, JSON, TOML, INI, and properties files for credentials, including test/example configs that might contain real values.\n"
+            "5. **Private keys** — look for PEM, P12, JKS files. Check for RSA/SSH private keys embedded in code or config.\n"
+            "6. **Third-party service credentials** — database passwords, AWS keys, GCP service account JSON, Stripe keys, SMTP credentials, OAuth secrets.\n\n"
+            "For each finding, assess the blast radius (what does this credential grant access to?). Replace hardcoded secrets with environment variable references. Add patterns to .gitignore to prevent future commits of secret files."
+        ),
+    },
+    {
+        "id": _id("threat-model"),
+        "slash_command": "threat-model",
+        "title": "Threat Modeling",
+        "description": "Identify threats, attack vectors, and trust boundaries",
+        "category": "security",
+        "prompt": (
+            "Perform threat modeling on this codebase using STRIDE methodology:\n\n"
+            "1. **System decomposition** — identify components, data stores, data flows, and trust boundaries. Map where untrusted input enters the system and where sensitive data leaves.\n"
+            "2. **Spoofing** — can an attacker impersonate a legitimate user, service, or component? Check authentication at every trust boundary.\n"
+            "3. **Tampering** — can data be modified in transit or at rest without detection? Check for unsigned data, missing integrity checks, and unprotected configuration.\n"
+            "4. **Repudiation** — can users deny their actions? Check audit logging for completeness. Are all state-changing operations logged with actor, action, and timestamp?\n"
+            "5. **Information Disclosure** — can sensitive data leak through error messages, logs, side channels (timing), or overly broad API responses?\n"
+            "6. **Denial of Service** — can an attacker exhaust resources? Check for unbounded queries, missing rate limits, file upload size limits, and regex DoS (ReDoS).\n"
+            "7. **Elevation of Privilege** — can a low-privilege user gain higher access? Check role enforcement, default permissions, and admin functionality exposure.\n\n"
+            "Produce a threat matrix listing each threat, its likelihood, impact, and current mitigation status. Implement fixes for unmitigated high-risk threats."
+        ),
+    },
+    {
+        "id": _id("api-security"),
+        "slash_command": "api-security",
+        "title": "API Security Audit",
+        "description": "Audit REST/GraphQL APIs for security weaknesses",
+        "category": "security",
+        "prompt": (
+            "Audit all API endpoints in this codebase for security issues:\n\n"
+            "1. **Authentication** — which endpoints require auth? Which are public? Verify the split is intentional. Check for endpoints that should require auth but don't.\n"
+            "2. **Authorization** — after auth, are permissions checked? Can user A access user B's data by changing an ID in the URL? Test for IDOR on every endpoint that takes a resource ID.\n"
+            "3. **Input validation** — for each endpoint, what inputs does it accept? Are they validated for type, length, format, and range? Check path params, query params, headers, and body.\n"
+            "4. **Rate limiting** — are there limits on request frequency? Which endpoints are most abuse-prone (login, signup, password reset, data export)?\n"
+            "5. **Data exposure** — do API responses include more data than the client needs? Are internal fields (IDs, timestamps, metadata) leaking? Check for mass assignment vulnerabilities.\n"
+            "6. **Error handling** — do error responses reveal internal details (stack traces, SQL errors, file paths)? Are error responses consistent in format?\n"
+            "7. **HTTP methods** — are only intended methods allowed? Can you PUT/DELETE on read-only resources? Are OPTIONS responses safe?\n\n"
+            "List all endpoints with their security posture. Fix any vulnerabilities found."
+        ),
+    },
+    {
+        "id": _id("supply-chain"),
+        "slash_command": "supply-chain",
+        "title": "Supply Chain Security",
+        "description": "Audit dependencies, build pipeline, and third-party risks",
+        "category": "security",
+        "prompt": (
+            "Audit the software supply chain of this project:\n\n"
+            "1. **Dependency vulnerabilities** — check all direct and transitive dependencies for known CVEs. Use the package manager's audit tool (npm audit, pip-audit, cargo audit, etc.).\n"
+            "2. **Dependency hygiene** — identify unmaintained packages (no updates in 2+ years), packages with very few maintainers, and packages that pull in excessive transitive dependencies.\n"
+            "3. **Lock files** — verify lock files exist and are committed. Check for drift between lock file and manifest. Ensure reproducible builds.\n"
+            "4. **Build integrity** — check CI/CD configuration for security: pinned action versions, secret handling, artifact signing, branch protection.\n"
+            "5. **Typosquatting risk** — verify package names are correct and from official sources. Check for similarly-named malicious packages.\n"
+            "6. **Permissions** — do dependencies request more permissions than they need? Check for packages that execute postinstall scripts, access the network, or read environment variables.\n\n"
+            "Update vulnerable dependencies where possible. Document any that can't be updated with justification and compensating controls."
+        ),
+    },
     # ── Bug Hunting ──
     {
         "id": _id("bugs"),
