@@ -19,6 +19,14 @@
             <button class="btn-icon" onclick="showAddProject()" title="Add project">+</button>
         </div>
         <div class="project-list" id="project-list"></div>
+        <!-- Global Queue -->
+        <div class="queue-section" id="queue-section" style="display:none">
+            <div class="queue-header" onclick="toggleQueueCollapse()">
+                <span class="queue-title">Queue</span>
+                <span class="queue-count" id="queue-count">0</span>
+            </div>
+            <div class="queue-list" id="queue-list"></div>
+        </div>
         <div class="panel-footer">
             <div style="display:flex;gap:12px">
                 <a href="/usage" class="btn-link">Usage</a>
@@ -193,18 +201,43 @@ function renderProjects() {
         el.innerHTML = '<div class="empty-hint">No projects yet.<br>Click + to add one.</div>';
         return;
     }
+
+    // FLIP animation: capture current positions
+    const oldPositions = {};
+    el.querySelectorAll('.project-item[data-id]').forEach(node => {
+        oldPositions[node.dataset.id] = node.getBoundingClientRect();
+    });
+
     el.innerHTML = state.projects.map(p => {
         const hasGit = p.github_repo_url ? `<span class="project-item-git" title="${esc(p.github_repo_url)}">&#128279;</span>` : '';
+        const activeRun = p.has_active_run ? `<span class="badge badge-in_progress">in progress</span>` : '';
         return `
         <div class="project-item ${state.currentProject?.id === p.id ? 'active' : ''}"
+             data-id="${p.id}"
              onclick="selectProject('${p.id}')"
              oncontextmenu="event.preventDefault();showCtx(event, 'project', '${p.id}', '${escAttr(p.name)}', ${!!p.github_repo_url})">
-            <div class="project-item-name">${esc(p.name)} ${hasGit}</div>
+            <div class="project-item-name">${esc(p.name)} ${hasGit} ${activeRun}</div>
             <div class="project-item-meta">
                 <span class="project-item-slug">${esc(p.slug)}</span>
             </div>
         </div>
     `}).join('');
+
+    // FLIP animation: animate from old to new positions
+    el.querySelectorAll('.project-item[data-id]').forEach(node => {
+        const id = node.dataset.id;
+        const oldRect = oldPositions[id];
+        if (!oldRect) return;
+        const newRect = node.getBoundingClientRect();
+        const dy = oldRect.top - newRect.top;
+        if (Math.abs(dy) < 2) return;
+        node.style.transform = `translateY(${dy}px)`;
+        node.style.transition = 'none';
+        requestAnimationFrame(() => {
+            node.style.transition = 'transform .35s ease';
+            node.style.transform = '';
+        });
+    });
 }
 
 async function selectProject(id) {
@@ -1253,9 +1286,158 @@ document.addEventListener('keydown', e => {
     }
 });
 
+// ── Global Queue ──
+let _queueItems = [];
+let _lastQueueHash = '';
+
+async function loadQueue() {
+    try {
+        const resp = await fetch('/api/queue/items');
+        if (!resp.ok) return;
+        const items = await resp.json();
+        const hash = items.map(i => `${i.run_id}:${i.run_status}:${i.queue_position}`).join('|');
+        if (hash === _lastQueueHash) return;
+        _lastQueueHash = hash;
+        _queueItems = items;
+        renderQueue();
+    } catch {}
+}
+
+function renderQueue() {
+    const section = document.getElementById('queue-section');
+    const list = document.getElementById('queue-list');
+    const count = document.getElementById('queue-count');
+
+    if (!_queueItems.length) {
+        section.style.display = 'none';
+        return;
+    }
+
+    section.style.display = 'flex';
+    count.textContent = _queueItems.length;
+
+    // FLIP animation: capture old positions
+    const oldPositions = {};
+    list.querySelectorAll('.queue-item[data-run-id]').forEach(node => {
+        oldPositions[node.dataset.runId] = node.getBoundingClientRect();
+    });
+
+    list.innerHTML = _queueItems.map((item, idx) => {
+        const isRunning = item.run_status === 'running';
+        const statusBadge = isRunning
+            ? '<span class="badge badge-in_progress">running</span>'
+            : `<span class="badge badge-open">#${idx + 1}</span>`;
+        return `
+        <div class="queue-item" data-run-id="${item.run_id}" data-idx="${idx}"
+             draggable="${isRunning ? 'false' : 'true'}"
+             onclick="selectProject('${item.project_id}');setTimeout(()=>selectTask('${item.task_id}'),300)">
+            ${isRunning ? '' : '<span class="queue-item-grip">&#8942;</span>'}
+            <div class="queue-item-info">
+                <div class="queue-item-task">${esc(item.identifier)} ${esc(item.task_title)}</div>
+                <div class="queue-item-project">${esc(item.project_name)}</div>
+            </div>
+            ${statusBadge}
+        </div>
+    `}).join('');
+
+    // FLIP animation
+    list.querySelectorAll('.queue-item[data-run-id]').forEach(node => {
+        const id = node.dataset.runId;
+        const oldRect = oldPositions[id];
+        if (!oldRect) return;
+        const newRect = node.getBoundingClientRect();
+        const dy = oldRect.top - newRect.top;
+        if (Math.abs(dy) < 2) return;
+        node.style.transform = `translateY(${dy}px)`;
+        node.style.transition = 'none';
+        requestAnimationFrame(() => {
+            node.style.transition = 'transform .35s ease';
+            node.style.transform = '';
+        });
+    });
+
+    setupQueueDrag();
+}
+
+function toggleQueueCollapse() {
+    const list = document.getElementById('queue-list');
+    const collapsed = list.style.display === 'none';
+    list.style.display = collapsed ? '' : 'none';
+}
+
+// ── Queue Drag & Drop ──
+let _dragRunId = null;
+function setupQueueDrag() {
+    const list = document.getElementById('queue-list');
+    list.querySelectorAll('.queue-item[draggable="true"]').forEach(item => {
+        item.addEventListener('dragstart', e => {
+            _dragRunId = item.dataset.runId;
+            item.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+        });
+        item.addEventListener('dragend', () => {
+            item.classList.remove('dragging');
+            list.querySelectorAll('.queue-item').forEach(el => el.classList.remove('drag-over'));
+            _dragRunId = null;
+        });
+        item.addEventListener('dragover', e => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            list.querySelectorAll('.queue-item').forEach(el => el.classList.remove('drag-over'));
+            if (item.dataset.runId !== _dragRunId) {
+                item.classList.add('drag-over');
+            }
+        });
+        item.addEventListener('dragleave', () => {
+            item.classList.remove('drag-over');
+        });
+        item.addEventListener('drop', async e => {
+            e.preventDefault();
+            item.classList.remove('drag-over');
+            if (!_dragRunId || _dragRunId === item.dataset.runId) return;
+
+            const pendingItems = _queueItems.filter(i => i.run_status === 'pending');
+            const fromIdx = pendingItems.findIndex(i => i.run_id === _dragRunId);
+            const toIdx = pendingItems.findIndex(i => i.run_id === item.dataset.runId);
+            if (fromIdx < 0 || toIdx < 0) return;
+
+            const [moved] = pendingItems.splice(fromIdx, 1);
+            pendingItems.splice(toIdx, 0, moved);
+
+            const run_ids = pendingItems.map(i => i.run_id);
+            try {
+                await fetch('/api/queue/reorder', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ run_ids }),
+                });
+                _lastQueueHash = '';
+                await loadQueue();
+            } catch {}
+        });
+    });
+}
+
 // ── Auto-refresh (always polls, even during streaming) ──
+let _lastProjectsHash = '';
 let _lastTasksHash = '';
 let _prevTaskStatuses = {};
+
+// Refresh project list and queue periodically
+setInterval(async () => {
+    try {
+        const resp = await fetch('/api/projects');
+        if (!resp.ok) return;
+        const newProjects = await resp.json();
+        const hash = newProjects.map(p => `${p.id}:${p.has_active_run}:${p.last_message_at||''}`).join('|');
+        if (hash === _lastProjectsHash) return;
+        _lastProjectsHash = hash;
+        state.projects = newProjects;
+        renderProjects();
+    } catch {}
+    loadQueue();
+}, 5000);
+
 setInterval(async () => {
     if (!state.currentProject) return;
     const resp = await fetch(`/api/projects/${state.currentProject.id}/tasks`);
@@ -1302,6 +1484,7 @@ setInterval(async () => {
 // ── Init ──
 document.addEventListener('DOMContentLoaded', async () => {
     renderProjects();
+    loadQueue();
 
     // Restore last selected project and task from localStorage
     const savedProject = localStorage.getItem('cw-project');

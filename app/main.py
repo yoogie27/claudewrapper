@@ -528,6 +528,21 @@ async def resume_queue() -> Any:
     return {"ok": True}
 
 
+@app.get("/api/queue/items")
+async def queue_items() -> Any:
+    return db.list_queue()
+
+
+@app.post("/api/queue/reorder")
+async def reorder_queue(request: Request) -> Any:
+    data = await request.json()
+    run_ids = data.get("run_ids", [])
+    if not isinstance(run_ids, list):
+        return JSONResponse({"error": "run_ids must be a list"}, 400)
+    db.reorder_queue(run_ids)
+    return {"ok": True}
+
+
 # ── Diagnostics API ──
 
 @app.get("/api/diagnostics/github")

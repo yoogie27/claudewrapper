@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS runs (
     started_at TEXT,
     ended_at TEXT,
     exit_code INTEGER,
+    queue_position INTEGER DEFAULT 0,
     created_at TEXT NOT NULL
 );
 
@@ -116,7 +117,7 @@ class Database:
         self._conn.commit()
 
     def _migrate(self) -> None:
-        """Drop old v1 tables if they exist."""
+        """Drop old v1 tables if they exist, add new columns."""
         tables = {r[0] for r in self._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
@@ -125,6 +126,13 @@ class Database:
             self._conn.execute(f"DROP TABLE IF EXISTS {t}")
         if old_tables & tables:
             self._conn.commit()
+
+        # Add queue_position column to runs (if not present)
+        if "runs" in tables:
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)").fetchall()}
+            if "queue_position" not in cols:
+                self._conn.execute("ALTER TABLE runs ADD COLUMN queue_position INTEGER DEFAULT 0")
+                self._conn.commit()
 
     def wal_checkpoint(self) -> None:
         try:
@@ -183,7 +191,20 @@ class Database:
         return dict(row) if row else None
 
     def list_projects(self) -> list[dict]:
-        rows = self._conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
+        rows = self._conn.execute(
+            """SELECT p.*,
+                      MAX(m.created_at) as last_message_at,
+                      EXISTS(
+                          SELECT 1 FROM runs r
+                          JOIN tasks t2 ON r.task_id = t2.id
+                          WHERE t2.project_id = p.id AND r.status IN ('running', 'pending')
+                      ) as has_active_run
+               FROM projects p
+               LEFT JOIN tasks t ON t.project_id = p.id
+               LEFT JOIN messages m ON m.task_id = t.id
+               GROUP BY p.id
+               ORDER BY COALESCE(MAX(m.created_at), p.created_at) DESC"""
+        ).fetchall()
         return [dict(r) for r in rows]
 
     def update_project(self, id: str, **kwargs: str) -> None:
@@ -323,12 +344,12 @@ class Database:
         return dict(row) if row else None
 
     def get_pending_run(self, project_id: str) -> dict | None:
-        """Get the oldest pending run for any task in this project."""
+        """Get the highest-priority pending run for any task in this project."""
         row = self._conn.execute(
             """SELECT r.* FROM runs r
                JOIN tasks t ON r.task_id = t.id
                WHERE t.project_id=? AND r.status='pending'
-               ORDER BY r.created_at ASC LIMIT 1""",
+               ORDER BY r.queue_position ASC, r.created_at ASC LIMIT 1""",
             (project_id,),
         ).fetchone()
         return dict(row) if row else None
@@ -389,6 +410,30 @@ class Database:
             (task_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_queue(self) -> list[dict]:
+        """List all pending/running runs across all projects, ordered by queue position."""
+        rows = self._conn.execute(
+            """SELECT r.id as run_id, r.status as run_status, r.queue_position, r.created_at as run_created_at,
+                      t.id as task_id, t.title as task_title, t.identifier, t.mode,
+                      p.id as project_id, p.name as project_name, p.slug as project_slug
+               FROM runs r
+               JOIN tasks t ON r.task_id = t.id
+               JOIN projects p ON t.project_id = p.id
+               WHERE r.status IN ('running', 'pending')
+               ORDER BY CASE r.status WHEN 'running' THEN 0 ELSE 1 END,
+                        r.queue_position ASC, r.created_at ASC"""
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def reorder_queue(self, run_ids: list[str]) -> None:
+        """Set queue_position based on the ordered list of run IDs."""
+        for pos, run_id in enumerate(run_ids):
+            self._conn.execute(
+                "UPDATE runs SET queue_position=? WHERE id=? AND status='pending'",
+                (pos, run_id),
+            )
+        self._conn.commit()
 
     def requeue_stale_runs(self, older_than_iso: str) -> int:
         with self.tx() as conn:

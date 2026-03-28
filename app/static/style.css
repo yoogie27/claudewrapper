@@ -283,6 +283,83 @@ html.dark .project-item.active { background: #2a1520; }
     vertical-align: middle;
 }
 
+/* ── Queue Section ────────────────────────────────────── */
+.queue-section {
+    border-top: 1px solid var(--panel-border);
+    flex-shrink: 0;
+    max-height: 40%;
+    display: flex;
+    flex-direction: column;
+}
+.queue-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--text-muted);
+}
+.queue-header:hover { color: var(--text-primary); }
+.queue-count {
+    background: var(--accent);
+    color: #fff;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 700;
+}
+.queue-list {
+    overflow-y: auto;
+    padding: 0 8px 8px;
+}
+.queue-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    cursor: grab;
+    transition: background .15s, transform .25s ease, opacity .15s;
+    margin-bottom: 2px;
+    background: var(--card-bg);
+    border: 1px solid transparent;
+}
+.queue-item:hover { background: var(--card-hover); }
+.queue-item.dragging { opacity: .5; border: 1px dashed var(--accent); }
+.queue-item.drag-over { border-top: 2px solid var(--accent); }
+.queue-item-grip {
+    color: var(--text-dim);
+    font-size: 14px;
+    cursor: grab;
+    flex-shrink: 0;
+}
+.queue-item-info {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+.queue-item-task {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.queue-item-project {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.queue-item .badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    flex-shrink: 0;
+}
+
 .empty-hint {
     text-align: center;
     color: var(--text-dim);
