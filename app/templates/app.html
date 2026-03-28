@@ -1389,7 +1389,7 @@ function renderQueue() {
     list.innerHTML = _queueItems.map((item, idx) => {
         const isRunning = item.run_status === 'running';
         const statusBadge = isRunning
-            ? '<span class="badge badge-in_progress">running</span>'
+            ? '<span class="badge badge-running">running</span>'
             : `<span class="badge badge-open">#${idx + 1}</span>`;
         return `
         <div class="queue-item" data-run-id="${item.run_id}" data-idx="${idx}"
