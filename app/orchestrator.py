@@ -92,6 +92,10 @@ class Orchestrator:
             return get_git_ssh_env(key_dir)
         return None
 
+    def _get_github_token(self, project: dict) -> str:
+        """Return the effective GitHub token: project-specific first, then global."""
+        return project.get("github_token", "").strip() or self.settings.github_token
+
     # ── Worker Loop ──
 
     async def _worker_loop(self, project_id: str) -> None:
@@ -272,9 +276,11 @@ class Orchestrator:
         self.db.update_task(task["id"], status=task_status)
 
         # Try to create PR if there are commits
-        if exit_code == 0 and self.settings.github_token:
+        github_token = self._get_github_token(project)
+        if exit_code == 0 and github_token:
             pr_url, pr_error = await self._maybe_create_pr(task, session_dir, identifier,
-                                                            base_branch=project.get("base_branch", ""))
+                                                            base_branch=project.get("base_branch", ""),
+                                                            github_token=github_token)
             if pr_url:
                 self.db.update_task(task["id"], pr_url=pr_url, status="in_review")
                 pr_msg_id = uuid.uuid4().hex
@@ -282,7 +288,7 @@ class Orchestrator:
                                        f"Pull request created: [{pr_url}]({pr_url})")
 
                 # Auto-merge the PR
-                merged = await self._merge_github_pr(pr_url)
+                merged = await self._merge_github_pr(pr_url, github_token=github_token)
                 merge_msg_id = uuid.uuid4().hex
                 if merged:
                     self.db.update_task(task["id"], pr_merged=1, status="done")
@@ -478,9 +484,9 @@ class Orchestrator:
     # ── PR Management ──
 
     async def _maybe_create_pr(self, task: dict, session_dir: Path, identifier: str,
-                                base_branch: str = "") -> tuple[str | None, str | None]:
+                                base_branch: str = "", github_token: str = "") -> tuple[str | None, str | None]:
         """Try to push and create a PR. Returns (pr_url, error_message)."""
-        if not self.settings.github_token:
+        if not github_token:
             return None, None
         meta = read_worktree_meta(session_dir)
         if not meta:
@@ -525,7 +531,7 @@ class Orchestrator:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 headers = {
-                    "Authorization": f"Bearer {self.settings.github_token}",
+                    "Authorization": f"Bearer {github_token}",
                     "Accept": "application/vnd.github+json",
                     "X-GitHub-Api-Version": "2022-11-28",
                 }
@@ -584,15 +590,15 @@ class Orchestrator:
             self.logger.warning("PR creation error: %s", exc)
             return None, f"**PR creation failed**\n\n`{exc}`"
 
-    async def _merge_github_pr(self, pr_url: str) -> bool:
-        if not self.settings.github_token:
+    async def _merge_github_pr(self, pr_url: str, github_token: str = "") -> bool:
+        if not github_token:
             return False
         m = re.match(r'https://github\.com/([^/]+)/([^/]+)/pull/(\d+)', pr_url)
         if not m:
             return False
         owner, repo, pr_number = m.group(1), m.group(2), m.group(3)
         headers = {
-            "Authorization": f"Bearer {self.settings.github_token}",
+            "Authorization": f"Bearer {github_token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }

@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS projects (
     base_branch TEXT DEFAULT 'main',
     default_prompt TEXT DEFAULT '',
     github_repo_url TEXT DEFAULT '',
+    github_token TEXT DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -134,6 +135,13 @@ class Database:
                 self._conn.execute("ALTER TABLE runs ADD COLUMN queue_position INTEGER DEFAULT 0")
                 self._conn.commit()
 
+        # Add github_token column to projects (if not present)
+        if "projects" in tables:
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(projects)").fetchall()}
+            if "github_token" not in cols:
+                self._conn.execute("ALTER TABLE projects ADD COLUMN github_token TEXT DEFAULT ''")
+                self._conn.commit()
+
     def wal_checkpoint(self) -> None:
         try:
             self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -172,12 +180,12 @@ class Database:
 
     def create_project(self, id: str, name: str, slug: str, local_path: str,
                        base_branch: str = "main", default_prompt: str = "",
-                       github_repo_url: str = "") -> dict:
+                       github_repo_url: str = "", github_token: str = "") -> dict:
         now = utc_now()
         self._conn.execute(
-            """INSERT INTO projects(id, name, slug, local_path, base_branch, default_prompt, github_repo_url, created_at, updated_at)
-               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (id, name, slug, local_path, base_branch, default_prompt, github_repo_url, now, now),
+            """INSERT INTO projects(id, name, slug, local_path, base_branch, default_prompt, github_repo_url, github_token, created_at, updated_at)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (id, name, slug, local_path, base_branch, default_prompt, github_repo_url, github_token, now, now),
         )
         self._conn.commit()
         return self.get_project(id)  # type: ignore
