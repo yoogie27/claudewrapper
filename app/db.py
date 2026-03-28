@@ -412,19 +412,30 @@ class Database:
         return [dict(r) for r in rows]
 
     def list_queue(self) -> list[dict]:
-        """List all pending/running runs across all projects, ordered by queue position."""
+        """List active queue entries (one per task, not per run) across all projects."""
         rows = self._conn.execute(
-            """SELECT r.id as run_id, r.status as run_status, r.queue_position, r.created_at as run_created_at,
+            """SELECT r.id as run_id, r.status as run_status,
+                      MIN(r.queue_position) as queue_position,
+                      MIN(r.created_at) as run_created_at,
                       t.id as task_id, t.title as task_title, t.identifier, t.mode,
-                      p.id as project_id, p.name as project_name, p.slug as project_slug
+                      p.id as project_id, p.name as project_name, p.slug as project_slug,
+                      MAX(CASE WHEN r.status = 'running' THEN 1 ELSE 0 END) as is_running,
+                      COUNT(r.id) as run_count
                FROM runs r
                JOIN tasks t ON r.task_id = t.id
                JOIN projects p ON t.project_id = p.id
                WHERE r.status IN ('running', 'pending')
-               ORDER BY CASE r.status WHEN 'running' THEN 0 ELSE 1 END,
-                        r.queue_position ASC, r.created_at ASC"""
+               GROUP BY t.id
+               ORDER BY is_running DESC,
+                        MIN(r.queue_position) ASC, MIN(r.created_at) ASC"""
         ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            # Normalize run_status from the grouped result
+            d["run_status"] = "running" if d["is_running"] else "pending"
+            result.append(d)
+        return result
 
     def reorder_queue(self, run_ids: list[str]) -> None:
         """Set queue_position based on the ordered list of run IDs."""
