@@ -483,8 +483,39 @@ async function createTask() {
     }
 }
 
+// ── Per-task Draft Persistence ──
+function _saveDraft() {
+    if (!state.currentTask) return;
+    const input = document.getElementById('chat-input');
+    const drafts = _getDrafts();
+    const val = input.value;
+    if (val) {
+        drafts[state.currentTask.id] = val;
+    } else {
+        delete drafts[state.currentTask.id];
+    }
+    localStorage.setItem('cw-drafts', JSON.stringify(drafts));
+}
+function _restoreDraft(taskId) {
+    const input = document.getElementById('chat-input');
+    const drafts = _getDrafts();
+    input.value = drafts[taskId] || '';
+    autoResizeInput();
+}
+function _getDrafts() {
+    try { return JSON.parse(localStorage.getItem('cw-drafts') || '{}'); } catch { return {}; }
+}
+function _clearDraft(taskId) {
+    const drafts = _getDrafts();
+    delete drafts[taskId];
+    localStorage.setItem('cw-drafts', JSON.stringify(drafts));
+}
+
 // ── Chat ──
 async function selectTask(id) {
+    // Save current task's draft before switching
+    _saveDraft();
+
     state.currentTask = state.tasks.find(t => t.id === id);
     if (!state.currentTask) return;
     localStorage.setItem('cw-task', id);
@@ -505,6 +536,9 @@ async function selectTask(id) {
     document.getElementById('chat-empty').style.display = 'none';
     document.getElementById('chat-messages').style.display = 'flex';
     document.getElementById('chat-input-area').style.display = 'block';
+
+    // Restore draft for this task
+    _restoreDraft(id);
 
     // Header actions
     updateChatActions();
@@ -631,6 +665,7 @@ async function sendMessage() {
     _sending = true;
     document.getElementById('btn-send').disabled = true;
     input.value = '';
+    _clearDraft(state.currentTask.id);
     autoResizeInput();
 
     // Optimistically add user message to chat
@@ -690,7 +725,7 @@ document.addEventListener('DOMContentLoaded', () => {
             sendMessage();
         }
     });
-    input.addEventListener('input', autoResizeInput);
+    input.addEventListener('input', () => { autoResizeInput(); _saveDraft(); });
 });
 
 function autoResizeInput() {
