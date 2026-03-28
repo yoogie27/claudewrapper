@@ -542,10 +542,16 @@ async def stream_task(task_id: str) -> Any:
 @app.post("/api/tasks/{task_id}/cancel")
 async def cancel_task_run(task_id: str) -> Any:
     run = db.get_active_run_for_task(task_id)
-    if not run or run["status"] != "running":
-        return JSONResponse({"error": "No running job to cancel"}, 400)
-    ok = orchestrator.cancel_run(run["id"])
-    return {"ok": ok}
+    if run and run["status"] == "running":
+        ok = orchestrator.cancel_run(run["id"])
+        return {"ok": ok}
+    # No running process — but task may be stuck in "in_progress".
+    # Reset the task status so the user can unstick it.
+    task = db.get_task(task_id)
+    if task and task["status"] == "in_progress":
+        db.update_task(task_id, status="failed")
+        return {"ok": True, "note": "No active run found; task status reset to failed"}
+    return JSONResponse({"error": "No running job to cancel"}, 400)
 
 
 @app.get("/api/tasks/{task_id}/runs")
