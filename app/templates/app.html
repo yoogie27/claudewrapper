@@ -147,6 +147,35 @@
     </div>
 </div>
 
+<!-- Edit Project Modal -->
+<div class="modal-overlay" id="modal-edit-project" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+    <div class="modal">
+        <h3>Edit Project</h3>
+        <input type="hidden" id="edit-project-id">
+        <div class="form-group">
+            <label>Project Name</label>
+            <input type="text" id="edit-project-name">
+        </div>
+        <div class="form-group">
+            <label>Git Repository URL</label>
+            <input type="text" id="edit-project-github" placeholder="https://github.com/owner/repo">
+        </div>
+        <div class="form-group">
+            <label>Base Branch</label>
+            <input type="text" id="edit-project-branch" placeholder="main">
+        </div>
+        <div class="form-group">
+            <label>GitHub Token <span style="font-weight:normal;color:var(--text-dim)">(optional, overrides global token)</span></label>
+            <input type="password" id="edit-project-token" placeholder="Leave empty to use global token">
+            <div id="edit-project-token-hint" style="font-size:12px;color:var(--text-dim);margin-top:4px"></div>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="document.getElementById('modal-edit-project').style.display='none'">Cancel</button>
+            <button class="btn btn-primary" id="btn-save-edit-project" onclick="saveEditProject()">Save</button>
+        </div>
+    </div>
+</div>
+
 <!-- Bottom Navigation (mobile) -->
 <nav class="bottom-nav" id="bottom-nav">
     <button class="nav-item active" data-panel="projects" onclick="showPanel('projects')">
@@ -975,6 +1004,67 @@ async function recloneProject(id, name) {
     }
 }
 
+// ── Edit Project ──
+function showEditProject(id) {
+    const project = state.projects.find(p => p.id === id);
+    if (!project) return;
+    document.getElementById('edit-project-id').value = id;
+    document.getElementById('edit-project-name').value = project.name || '';
+    document.getElementById('edit-project-github').value = project.github_repo_url || '';
+    document.getElementById('edit-project-branch').value = project.base_branch || 'main';
+    document.getElementById('edit-project-token').value = '';
+    const hint = document.getElementById('edit-project-token-hint');
+    hint.textContent = project.has_github_token
+        ? 'A custom token is set for this project. Leave empty to keep it, or enter a new one to replace it.'
+        : 'No custom token set. Uses the global GITHUB_TOKEN.';
+    document.getElementById('modal-edit-project').style.display = 'flex';
+    document.getElementById('edit-project-name').focus();
+}
+
+async function saveEditProject() {
+    const id = document.getElementById('edit-project-id').value;
+    const updates = {
+        name: document.getElementById('edit-project-name').value.trim(),
+        base_branch: document.getElementById('edit-project-branch').value.trim() || 'main',
+        github_repo_url: document.getElementById('edit-project-github').value.trim(),
+    };
+    const tokenVal = document.getElementById('edit-project-token').value;
+    // Only send github_token if user typed something (empty string = clear, non-empty = set)
+    if (tokenVal !== '') {
+        updates.github_token = tokenVal;
+    }
+    if (!updates.name) { toast('Error', 'Project name is required', 'error'); return; }
+
+    const btn = document.getElementById('btn-save-edit-project');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    try {
+        const resp = await fetch(`/api/projects/${id}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(updates),
+        });
+        if (resp.ok) {
+            const updated = await resp.json();
+            const idx = state.projects.findIndex(p => p.id === id);
+            if (idx >= 0) state.projects[idx] = { ...state.projects[idx], ...updated };
+            if (state.currentProject?.id === id) {
+                state.currentProject = state.projects[idx];
+                document.getElementById('tasks-project-name').textContent = updated.name;
+            }
+            renderProjects();
+            document.getElementById('modal-edit-project').style.display = 'none';
+            toast('Saved', 'Project updated', 'success');
+        } else {
+            const err = await resp.json();
+            toast('Error', err.error || 'Failed', 'error');
+        }
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Save';
+    }
+}
+
 // ── Delete Project ──
 async function deleteProject(id, name) {
     if (!confirm(`Delete project "${name}" and ALL its tasks?`)) return;
@@ -1182,6 +1272,7 @@ function showCtx(event, type, id, name, hasGit) {
     let items = '';
 
     if (type === 'project') {
+        items += `<div class="ctx-item" onclick="hideCtx();showEditProject('${id}')">&#9998; Edit</div>`;
         if (hasGit) items += `<div class="ctx-item" onclick="hideCtx();recloneProject('${id}','${escAttr(name)}')">&#8635; Re-clone</div>`;
         items += `<div class="ctx-item ctx-danger" onclick="hideCtx();deleteProject('${id}','${escAttr(name)}')">&#128465; Delete project</div>`;
     } else if (type === 'task') {
@@ -1342,6 +1433,8 @@ document.addEventListener('DOMContentLoaded', () => {
 document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
         // Close modals
+        const editModal = document.getElementById('modal-edit-project');
+        if (editModal.style.display !== 'none') { editModal.style.display = 'none'; return; }
         const modal = document.getElementById('modal-project');
         if (modal.style.display !== 'none') { modal.style.display = 'none'; return; }
         // Close quick-task

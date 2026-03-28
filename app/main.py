@@ -81,9 +81,16 @@ async def settings_page(request: Request) -> Any:
 
 # ── Project API ──
 
+def _sanitize_project(p: dict) -> dict:
+    """Strip secret fields from project dict before returning to client."""
+    out = {k: v for k, v in p.items() if k != "github_token"}
+    out["has_github_token"] = bool(p.get("github_token"))
+    return out
+
+
 @app.get("/api/projects")
 async def list_projects() -> Any:
-    return db.list_projects()
+    return [_sanitize_project(p) for p in db.list_projects()]
 
 
 @app.post("/api/projects")
@@ -141,11 +148,13 @@ async def create_project(request: Request) -> Any:
         base_branch=data.get("base_branch", "main") or "main",
         default_prompt=data.get("default_prompt", ""),
         github_repo_url=github_url,
+        github_token=data.get("github_token", "").strip(),
     )
 
+    result = _sanitize_project(project)
     if clone_error:
-        project["clone_error"] = clone_error
-    return project
+        result["clone_error"] = clone_error
+    return result
 
 
 @app.post("/api/projects/{project_id}/reclone")
@@ -193,11 +202,11 @@ async def update_project(project_id: str, request: Request) -> Any:
     if not project:
         return JSONResponse({"error": "Not found"}, 404)
 
-    allowed = {"name", "base_branch", "default_prompt", "github_repo_url"}
+    allowed = {"name", "base_branch", "default_prompt", "github_repo_url", "github_token"}
     updates = {k: v for k, v in data.items() if k in allowed and v is not None}
     if updates:
         db.update_project(project_id, **updates)
-    return db.get_project(project_id)
+    return _sanitize_project(db.get_project(project_id))
 
 
 @app.delete("/api/projects/{project_id}")
@@ -691,7 +700,8 @@ async def diagnose_repo(project_id: str) -> Any:
             checks.append({"name": "GitHub repo (from URL)", "ok": True, "detail": f"{gh[0]}/{gh[1]}"})
 
     # 7. GitHub API access (works even without local checkout)
-    if gh and settings.github_token:
+    effective_token = project.get("github_token", "").strip() or settings.github_token
+    if gh and effective_token:
         import httpx
         owner, repo_name = gh
         try:
@@ -699,7 +709,7 @@ async def diagnose_repo(project_id: str) -> Any:
                 resp = await client.get(
                     f"https://api.github.com/repos/{owner}/{repo_name}",
                     headers={
-                        "Authorization": f"Bearer {settings.github_token}",
+                        "Authorization": f"Bearer {effective_token}",
                         "Accept": "application/vnd.github+json",
                     },
                 )
@@ -808,7 +818,8 @@ async def get_actions_status(project_id: str) -> Any:
     project = db.get_project(project_id)
     if not project:
         return JSONResponse({"error": "Not found"}, 404)
-    if not settings.github_token:
+    effective_token = project.get("github_token", "").strip() or settings.github_token
+    if not effective_token:
         return {"runs": [], "error": "No GitHub token configured"}
 
     # Parse GitHub owner/repo from the stored URL (no filesystem needed)
@@ -829,7 +840,7 @@ async def get_actions_status(project_id: str) -> Any:
             resp = await client.get(
                 f"https://api.github.com/repos/{owner}/{repo_name}/actions/runs",
                 headers={
-                    "Authorization": f"Bearer {settings.github_token}",
+                    "Authorization": f"Bearer {effective_token}",
                     "Accept": "application/vnd.github+json",
                     "X-GitHub-Api-Version": "2022-11-28",
                 },
