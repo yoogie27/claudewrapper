@@ -66,6 +66,10 @@ class Orchestrator:
 
     async def start(self) -> None:
         self.settings.ensure_dirs()
+        # On startup, fail any runs stuck in 'running' from a prior crash/restart
+        orphaned = self.db.fail_orphaned_runs()
+        if orphaned:
+            self.logger.info("Startup: marked %d orphaned running runs as failed", orphaned)
         asyncio.create_task(self._reaper_loop())
         asyncio.create_task(self._cleanup_loop())
         # Restart workers for projects with pending runs
@@ -422,6 +426,16 @@ class Orchestrator:
         return text[:5000], cost_usd, input_tokens, output_tokens, model
 
     # ── Job Control ──
+
+    def is_run_alive(self, run_id: str) -> bool:
+        """Check if a run has a live process in this server instance."""
+        holder = self._proc_holders.get(run_id)
+        if not holder:
+            return False
+        proc = holder.get("proc")
+        if proc and proc.poll() is not None:
+            return False  # Process has exited
+        return True
 
     def cancel_run(self, run_id: str) -> bool:
         holder = self._proc_holders.get(run_id)

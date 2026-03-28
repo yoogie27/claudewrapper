@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
-from app.db import Database
+from app.db import Database, utc_now
 from app.orchestrator import Orchestrator
 from app.task_modes import detect_mode, MODE_LABELS, MODE_COLORS
 from app.ssh import setup_ssh
@@ -407,6 +407,7 @@ async def stream_task(task_id: str) -> Any:
         pos = 0
         line_buffer = ""
         idle = 0
+        stale_ticks = 0  # ticks with no new output for a "running" run
 
         while True:
             # Find the current active run for this task (running > oldest pending)
@@ -429,8 +430,10 @@ async def stream_task(task_id: str) -> Any:
                 current_run_id = active["id"]
                 pos = 0
                 line_buffer = ""
+                stale_ticks = 0
 
             # Read output from this run's stdout file
+            had_output = False
             session_dir = active.get("session_dir")
             if session_dir:
                 stdout_path = Path(session_dir) / "stdout.txt"
@@ -438,6 +441,7 @@ async def stream_task(task_id: str) -> Any:
                     try:
                         raw = stdout_path.read_text(encoding="utf-8", errors="replace")
                         if len(raw) > pos:
+                            had_output = True
                             chunk = raw[pos:]
                             pos = len(raw)
                             chunk = line_buffer + chunk
@@ -464,8 +468,27 @@ async def stream_task(task_id: str) -> Any:
                 current_run_id = None
                 pos = 0
                 line_buffer = ""
+                stale_ticks = 0
                 await asyncio.sleep(1)
                 continue
+
+            # Detect stale "running" runs with no live process
+            if active["status"] == "running" and not had_output:
+                stale_ticks += 1
+                # After ~15s of no output, check if process is actually alive
+                if stale_ticks >= 30 and not orchestrator.is_run_alive(current_run_id):
+                    db.update_run(current_run_id, status="failed", ended_at=utc_now(), exit_code=-1)
+                    task = db.get_task(task_id)
+                    if task and not db.has_pending_runs(task_id):
+                        db.update_task(task_id, status="failed")
+                    current_run_id = None
+                    pos = 0
+                    line_buffer = ""
+                    stale_ticks = 0
+                    await asyncio.sleep(0.5)
+                    continue
+            else:
+                stale_ticks = 0
 
             await asyncio.sleep(0.5)
 

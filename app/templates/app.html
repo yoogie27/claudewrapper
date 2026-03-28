@@ -769,8 +769,32 @@ function connectStream() {
     // Guard: ignore events from stale EventSources after task switch
     function isStale() { return state.streamSource !== source; }
 
+    // Watchdog: if no SSE events for 30s, verify the run is still alive
+    let _lastEventTime = Date.now();
+    const _watchdog = setInterval(async () => {
+        if (isStale()) { clearInterval(_watchdog); return; }
+        if (Date.now() - _lastEventTime > 30000) {
+            try {
+                const resp = await fetch(`/api/tasks/${state.currentTask.id}/runs`);
+                const runs = await resp.json();
+                const hasActive = runs.some(r => r.status === 'running' || r.status === 'pending');
+                if (!hasActive) {
+                    clearInterval(_watchdog);
+                    source.close();
+                    state.streaming = false;
+                    state.streamingTaskId = null;
+                    state.streamSource = null;
+                    document.getElementById('typing-indicator').style.display = 'none';
+                    document.getElementById('btn-send').disabled = false;
+                    loadMessages(true).then(() => loadTasks());
+                }
+            } catch {}
+        }
+    }, 10000);
+
     source.addEventListener('text', e => {
         if (isStale()) return;
+        _lastEventTime = Date.now();
         ensureStreamEl();
         const data = JSON.parse(e.data);
         streamText += data.text;
@@ -784,6 +808,7 @@ function connectStream() {
 
     source.addEventListener('tool', e => {
         if (isStale()) return;
+        _lastEventTime = Date.now();
         ensureStreamEl();
         const data = JSON.parse(e.data);
         if (!toolContainer) {
@@ -805,6 +830,7 @@ function connectStream() {
     });
 
     source.addEventListener('result', e => {
+        _lastEventTime = Date.now();
         if (isStale() || !streamEl) return;
         const data = JSON.parse(e.data);
         if (data.cost_usd > 0) {
@@ -817,6 +843,7 @@ function connectStream() {
 
     // A run finished but more are queued — reset for next run's response
     source.addEventListener('run_complete', () => {
+        _lastEventTime = Date.now();
         if (isStale()) return;
         streamEl = null;
         streamText = '';
@@ -826,6 +853,7 @@ function connectStream() {
 
     source.addEventListener('done', () => {
         if (isStale()) return;
+        clearInterval(_watchdog);
         state.streaming = false;
         state.streamingTaskId = null;
         source.close();
@@ -846,6 +874,7 @@ function connectStream() {
 
     source.onerror = () => {
         if (isStale()) return;
+        clearInterval(_watchdog);
         state.streaming = false;
         state.streamingTaskId = null;
         source.close();
