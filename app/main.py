@@ -548,15 +548,6 @@ async def stream_task(task_id: str) -> Any:
                     # auto-refresh reconnect once the worker processes it
                     yield "event: done\ndata: {}\n\n"
                     return
-                elif active["status"] == "running" and stale_ticks >= 600 and alive:
-                    # Process alive but no output for ~5min — likely hanging
-                    orchestrator.cancel_run(current_run_id)
-                    current_run_id = None
-                    pos = 0
-                    line_buffer = ""
-                    stale_ticks = 0
-                    await asyncio.sleep(0.5)
-                    continue
             else:
                 stale_ticks = 0
 
