@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from app.claude_runner import ClaudeRunner
+from app.cli_backend import CliBackend, ClaudeBackend, create_backend, BACKENDS
 from app.config import Settings
 from app.db import Database, utc_now
 from app.task_modes import get_mode_prompt
@@ -50,19 +50,25 @@ class Orchestrator:
     def __init__(self, settings: Settings, db: Database) -> None:
         self.settings = settings
         self.db = db
-        self.runner = ClaudeRunner(
-            settings.claude_command_template,
-            settings.claude_prompt_via,
-            settings.claude_prompt_arg,
-            settings.claude_workdir_mode,
-        )
         log_path = str(settings.data_path() / "logs" / "app.log")
         self.logger = setup_logger(log_path)
         self.stop_event = asyncio.Event()
-        # run_id -> {"proc": Popen}
         self._proc_holders: dict[str, dict] = {}
-        # project_id -> asyncio.Task (one worker per active project)
         self._project_workers: dict[str, asyncio.Task] = {}
+
+    def _get_backend(self, backend_name: str) -> CliBackend:
+        """Create a CLI backend for a given task's backend preference."""
+        custom_cmd = self.db.get_config(f"backend_cmd:{backend_name}", "") or ""
+        if backend_name == "claude":
+            backend = create_backend(
+                "claude", command_template=custom_cmd or self.settings.claude_command_template,
+                prompt_via=self.settings.claude_prompt_via, prompt_arg=self.settings.claude_prompt_arg,
+            )
+        else:
+            backend = create_backend(backend_name, command_template=custom_cmd)
+        backend.model = self.db.get_config(f"{backend_name}_model", "") or self.db.get_config("claude_model", "") or ""
+        backend.fallback_model = self.db.get_config(f"{backend_name}_fallback_model", "") or self.db.get_config("claude_fallback_model", "") or ""
+        return backend
 
     async def start(self) -> None:
         self.settings.ensure_dirs()
@@ -194,43 +200,44 @@ class Orchestrator:
         prompt = self._build_prompt(task, project, messages)
         self.db.update_run(run_id, prompt=prompt)
 
-        # Determine if we should resume a prior Claude session
+        # Select CLI backend for this task
+        backend_name = task.get("cli_backend") or "claude"
+        try:
+            backend = self._get_backend(backend_name)
+        except ValueError:
+            self.logger.warning("[%s] Unknown backend %r, falling back to claude", identifier, backend_name)
+            backend = self._get_backend("claude")
+
         resume_session_id = task.get("claude_session_id")
 
-        # Run Claude
         if self.settings.test_mode:
-            self.logger.info("[%s] TEST MODE — skipping Claude", identifier)
-            # Write a fake result for test mode
+            self.logger.info("[%s] TEST MODE — skipping %s", identifier, backend.display_name)
             (session_dir / "stdout.txt").write_text(
-                json.dumps({"type": "result", "result": "Test mode: no Claude run.", "total_cost_usd": 0}) + "\n",
+                json.dumps({"type": "result", "result": f"Test mode: no {backend.display_name} run.", "total_cost_usd": 0}) + "\n",
                 encoding="utf-8",
             )
             self.db.update_run(run_id, status="done", ended_at=utc_now(), exit_code=0)
             assistant_msg_id = uuid.uuid4().hex
             self.db.create_message(assistant_msg_id, task["id"], "assistant",
-                                   "Test mode: no Claude run.", run_id=run_id)
+                                   f"Test mode: no {backend.display_name} run.", run_id=run_id)
             task_status = "in_progress" if self.db.has_pending_runs(task["id"]) else "done"
             self.db.update_task(task["id"], status=task_status)
             return
-
-        # Apply model selection from settings
-        self.runner.model = self.db.get_config("claude_model", "") or ""
-        self.runner.fallback_model = self.db.get_config("claude_fallback_model", "") or ""
 
         proc_holder: dict = {}
         self._proc_holders[run_id] = proc_holder
         ssh_env = self._get_git_ssh_env()
 
         try:
-            result = await asyncio.to_thread(
-                self.runner.run, identifier, prompt, session_dir, workdir,
+            run_result = await asyncio.to_thread(
+                backend.run, identifier, prompt, session_dir, workdir,
                 proc_holder, resume_session_id, ssh_env,
             )
         except Exception as exc:
-            self.logger.error("[%s] Claude runner error: %s", identifier, exc)
+            self.logger.error("[%s] %s runner error: %s", identifier, backend.display_name, exc)
             err_msg_id = uuid.uuid4().hex
             self.db.create_message(err_msg_id, task["id"], "assistant",
-                                   f"**Claude failed to start:**\n\n`{exc}`\n\nCheck that Claude CLI is installed and accessible.",
+                                   f"**{backend.display_name} failed to start:**\n\n`{exc}`\n\nCheck that the CLI is installed and accessible.",
                                    run_id=run_id)
             self.db.update_run(run_id, status="failed", ended_at=utc_now(), exit_code=-1)
             self.db.update_task(task["id"], status="failed")
@@ -238,17 +245,18 @@ class Orchestrator:
         finally:
             self._proc_holders.pop(run_id, None)
 
-        # Parse result
-        exit_code = result.returncode
-        self.logger.info("[%s] Claude exited with code %d", identifier, exit_code)
+        exit_code = run_result.returncode
+        self.logger.info("[%s] %s exited with code %d", identifier, backend.display_name, exit_code)
 
-        # Extract session ID for future --resume
-        new_session_id = getattr(result, "claude_session_id", None)
+        new_session_id = run_result.session_id
         if new_session_id:
             self.db.update_task(task["id"], claude_session_id=new_session_id)
 
-        # Parse output
-        summary, cost_usd, input_tokens, output_tokens, model = self._parse_result(result.stdout)
+        summary = run_result.summary
+        cost_usd = run_result.cost_usd
+        input_tokens = run_result.input_tokens
+        output_tokens = run_result.output_tokens
+        model = run_result.model
 
         # Store assistant message
         assistant_msg_id = uuid.uuid4().hex
@@ -334,7 +342,7 @@ class Orchestrator:
             if len(messages) > 20:
                 parts.append(f"*({len(messages) - 20} earlier messages omitted)*\n")
             for msg in recent:
-                role_label = "User" if msg["role"] == "user" else "Assistant"
+                role_label = {"user": "User", "assistant": "Assistant", "system": "System"}.get(msg["role"], msg["role"].title())
                 # Truncate very long assistant messages in history
                 content = msg["content"]
                 if msg["role"] == "assistant" and len(content) > 2000:
@@ -365,71 +373,6 @@ class Orchestrator:
         ])
 
         return "\n".join(parts)
-
-    # ── Result Parsing ──
-
-    def _parse_result(self, stdout: str) -> tuple[str, float, int, int, str]:
-        """Parse stream-json output. Returns (summary, cost_usd, input_tokens, output_tokens, model)."""
-        text = (stdout or "").strip()
-        if not text:
-            return "No output captured.", 0.0, 0, 0, ""
-
-        cost_usd = 0.0
-        input_tokens = 0
-        output_tokens = 0
-        model = ""
-
-        lines = text.splitlines()
-
-        # Find result event (has cost/token data)
-        for line in reversed(lines):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                if isinstance(obj, dict) and obj.get("type") == "result":
-                    cost_usd = obj.get("total_cost_usd", 0.0) or 0.0
-                    usage = obj.get("usage", {}) or {}
-                    input_tokens = usage.get("input_tokens", 0) or 0
-                    output_tokens = usage.get("output_tokens", 0) or 0
-                    model = obj.get("model", "") or ""
-
-                    raw = obj.get("result", "")
-                    if isinstance(raw, list):
-                        summary = "".join(
-                            c.get("text", "") for c in raw if c.get("type") == "text"
-                        ).strip()
-                    else:
-                        summary = str(raw).strip()
-                    if summary:
-                        return summary, cost_usd, input_tokens, output_tokens, model
-                    break
-            except (json.JSONDecodeError, ValueError):
-                continue
-
-        # Fallback: collect assistant text blocks
-        assistant_text = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                if isinstance(obj, dict) and obj.get("type") == "assistant":
-                    content = (obj.get("message") or {}).get("content", [])
-                    for block in (content if isinstance(content, list) else []):
-                        if block.get("type") == "text":
-                            assistant_text.append(block["text"])
-            except (json.JSONDecodeError, ValueError):
-                continue
-
-        if assistant_text:
-            combined = "\n".join(assistant_text).strip()
-            if combined:
-                return combined[:5000], cost_usd, input_tokens, output_tokens, model
-
-        return text[:5000], cost_usd, input_tokens, output_tokens, model
 
     # ── Job Control ──
 
@@ -646,9 +589,11 @@ class Orchestrator:
             await asyncio.sleep(300)  # every 5 min
             try:
                 cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.settings.stale_job_timeout_minutes)
-                count = self.db.requeue_stale_runs(cutoff.isoformat())
-                if count:
-                    self.logger.info("Reaper: requeued %d stale runs", count)
+                project_ids = self.db.requeue_stale_runs(cutoff.isoformat())
+                if project_ids:
+                    self.logger.info("Reaper: requeued stale runs for %d projects", len(project_ids))
+                    for pid in project_ids:
+                        self._ensure_worker(pid)
                 self.db.wal_checkpoint()
             except Exception as exc:
                 self.logger.error("Reaper error: %s", exc)
@@ -663,17 +608,22 @@ class Orchestrator:
                 for entry in entries:
                     d = entry.get("session_dir")
                     if d:
-                        meta = read_worktree_meta(Path(d))
+                        session_path = Path(d)
+                        meta = read_worktree_meta(session_path)
                         if meta and meta.get("repo") and meta.get("worktree"):
                             try:
                                 remove_worktree(Path(meta["repo"]), Path(meta["worktree"]))
                             except Exception:
                                 pass
-                    identifier_dir = self.settings.data_path() / "sessions" / entry["identifier"]
-                    try:
-                        shutil.rmtree(str(identifier_dir), ignore_errors=True)
-                    except Exception:
-                        pass
+                        try:
+                            shutil.rmtree(str(session_path), ignore_errors=True)
+                        except Exception:
+                            pass
+                        identifier_dir = self.settings.data_path() / "sessions" / entry["identifier"]
+                        try:
+                            identifier_dir.rmdir()
+                        except OSError:
+                            pass
                 if entries:
                     self.logger.info("Cleaned %d old runs", len(entries))
             except Exception as exc:
@@ -690,15 +640,21 @@ class Orchestrator:
         identifier = task["identifier"]
         removed = []
 
-        # Remove worktree
         if task.get("worktree_path"):
             wt_path = Path(task["worktree_path"])
             if wt_path.exists():
-                try:
+                project = self.db.get_project(task["project_id"])
+                if project:
+                    repo = self.settings.project_repo_path(project["slug"])
+                    try:
+                        remove_worktree(repo, wt_path)
+                        removed.append("worktree")
+                    except Exception:
+                        shutil.rmtree(str(wt_path), ignore_errors=True)
+                        removed.append("worktree")
+                else:
                     shutil.rmtree(str(wt_path), ignore_errors=True)
                     removed.append("worktree")
-                except Exception:
-                    pass
 
         # Remove session files
         identifier_dir = self.settings.data_path() / "sessions" / identifier

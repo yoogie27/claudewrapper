@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     branch_name TEXT,
     worktree_path TEXT,
     claude_session_id TEXT,
+    cli_backend TEXT DEFAULT 'claude',
     pr_url TEXT,
     pr_merged INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -135,6 +136,13 @@ class Database:
                 self._conn.execute("ALTER TABLE runs ADD COLUMN queue_position INTEGER DEFAULT 0")
                 self._conn.commit()
 
+        # Add cli_backend column to tasks (if not present)
+        if "tasks" in tables:
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(tasks)").fetchall()}
+            if "cli_backend" not in cols:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN cli_backend TEXT DEFAULT 'claude'")
+                self._conn.commit()
+
         # Add github_token column to projects (if not present)
         if "projects" in tables:
             cols = {r[1] for r in self._conn.execute("PRAGMA table_info(projects)").fetchall()}
@@ -223,38 +231,42 @@ class Database:
         self._conn.commit()
 
     def delete_project(self, id: str) -> None:
-        # Cascade: delete runs, messages, tasks for this project
-        task_ids = [r[0] for r in self._conn.execute(
-            "SELECT id FROM tasks WHERE project_id=?", (id,)
-        ).fetchall()]
-        if task_ids:
-            placeholders = ",".join("?" * len(task_ids))
-            self._conn.execute(f"DELETE FROM messages WHERE task_id IN ({placeholders})", task_ids)
-            self._conn.execute(f"DELETE FROM runs WHERE task_id IN ({placeholders})", task_ids)
-            self._conn.execute(f"DELETE FROM tasks WHERE project_id=?", (id,))
-        self._conn.execute("DELETE FROM projects WHERE id=?", (id,))
-        # Clean up task counter
-        self._conn.execute("DELETE FROM config WHERE key=?", (f"task_counter:{id}",))
-        self._conn.commit()
+        with self.tx() as conn:
+            task_ids = [r[0] for r in conn.execute(
+                "SELECT id FROM tasks WHERE project_id=?", (id,)
+            ).fetchall()]
+            if task_ids:
+                placeholders = ",".join("?" * len(task_ids))
+                conn.execute(f"DELETE FROM messages WHERE task_id IN ({placeholders})", task_ids)
+                conn.execute(f"DELETE FROM runs WHERE task_id IN ({placeholders})", task_ids)
+                conn.execute(f"DELETE FROM tasks WHERE project_id=?", (id,))
+            conn.execute("DELETE FROM projects WHERE id=?", (id,))
+            conn.execute("DELETE FROM config WHERE key=?", (f"task_counter:{id}",))
 
     # ── Tasks ──
 
     def next_task_number(self, project_id: str) -> int:
-        """Monotonic counter per project — survives task deletions."""
+        """Monotonic counter per project. Atomic via BEGIN IMMEDIATE."""
         counter_key = f"task_counter:{project_id}"
-        current = int(self.get_config(counter_key, "0") or "0")
-        next_num = current + 1
-        self.set_config(counter_key, str(next_num))
-        return next_num
+        with self.tx() as conn:
+            row = conn.execute("SELECT value FROM config WHERE key = ?", (counter_key,)).fetchone()
+            current = int(row[0]) if row else 0
+            next_num = current + 1
+            conn.execute(
+                "INSERT INTO config(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (counter_key, str(next_num)),
+            )
+            return next_num
 
     def create_task(self, id: str, project_id: str, title: str, identifier: str,
                     description: str = "", mode: str = "feature",
-                    priority: str = "medium", branch_name: str = "") -> dict:
+                    priority: str = "medium", branch_name: str = "",
+                    cli_backend: str = "claude") -> dict:
         now = utc_now()
         self._conn.execute(
-            """INSERT INTO tasks(id, project_id, title, description, mode, status, priority, identifier, branch_name, created_at, updated_at)
-               VALUES(?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)""",
-            (id, project_id, title, description, mode, priority, identifier, branch_name, now, now),
+            """INSERT INTO tasks(id, project_id, title, description, mode, status, priority, identifier, branch_name, cli_backend, created_at, updated_at)
+               VALUES(?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)""",
+            (id, project_id, title, description, mode, priority, identifier, branch_name, cli_backend, now, now),
         )
         self._conn.commit()
         return self.get_task(id)  # type: ignore
@@ -292,10 +304,10 @@ class Database:
         self._conn.commit()
 
     def delete_task(self, id: str) -> None:
-        self._conn.execute("DELETE FROM messages WHERE task_id=?", (id,))
-        self._conn.execute("DELETE FROM runs WHERE task_id=?", (id,))
-        self._conn.execute("DELETE FROM tasks WHERE id=?", (id,))
-        self._conn.commit()
+        with self.tx() as conn:
+            conn.execute("DELETE FROM messages WHERE task_id=?", (id,))
+            conn.execute("DELETE FROM runs WHERE task_id=?", (id,))
+            conn.execute("DELETE FROM tasks WHERE id=?", (id,))
 
     # ── Messages ──
 
@@ -312,11 +324,25 @@ class Database:
         return {"id": id, "task_id": task_id, "role": role, "content": content,
                 "run_id": run_id, "metadata": metadata or {}, "created_at": now}
 
-    def list_messages(self, task_id: str) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT * FROM messages WHERE task_id=? ORDER BY created_at ASC",
-            (task_id,),
-        ).fetchall()
+    def list_messages(self, task_id: str, limit: int = 0, before: str = "") -> list[dict]:
+        if limit > 0:
+            if before:
+                rows = self._conn.execute(
+                    "SELECT * FROM (SELECT * FROM messages WHERE task_id=? AND created_at < ? "
+                    "ORDER BY created_at DESC LIMIT ?) sub ORDER BY created_at ASC",
+                    (task_id, before, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM (SELECT * FROM messages WHERE task_id=? "
+                    "ORDER BY created_at DESC LIMIT ?) sub ORDER BY created_at ASC",
+                    (task_id, limit),
+                ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM messages WHERE task_id=? ORDER BY created_at ASC",
+                (task_id,),
+            ).fetchall()
         result = []
         for r in rows:
             d = dict(r)
@@ -420,30 +446,34 @@ class Database:
         return [dict(r) for r in rows]
 
     def list_queue(self) -> list[dict]:
-        """List active queue entries (one per task, not per run) across all projects."""
+        """List active queue entries (one per task) with deterministic run selection."""
         rows = self._conn.execute(
-            """SELECT r.id as run_id, r.status as run_status,
-                      MIN(r.queue_position) as queue_position,
-                      MIN(r.created_at) as run_created_at,
+            """SELECT repr.id as run_id, repr.status as run_status,
+                      repr.queue_position, repr.created_at as run_created_at,
                       t.id as task_id, t.title as task_title, t.identifier, t.mode,
                       p.id as project_id, p.name as project_name, p.slug as project_slug,
-                      MAX(CASE WHEN r.status = 'running' THEN 1 ELSE 0 END) as is_running,
-                      COUNT(r.id) as run_count
-               FROM runs r
-               JOIN tasks t ON r.task_id = t.id
+                      CASE WHEN repr.status = 'running' THEN 1 ELSE 0 END as is_running,
+                      agg.run_count
+               FROM (
+                   SELECT task_id, COUNT(*) as run_count
+                   FROM runs WHERE status IN ('running', 'pending')
+                   GROUP BY task_id
+               ) agg
+               JOIN (
+                   SELECT * FROM runs r1
+                   WHERE r1.status IN ('running', 'pending')
+                     AND r1.id = (
+                         SELECT r2.id FROM runs r2
+                         WHERE r2.task_id = r1.task_id AND r2.status IN ('running', 'pending')
+                         ORDER BY (r2.status = 'running') DESC, r2.queue_position ASC, r2.created_at ASC
+                         LIMIT 1
+                     )
+               ) repr ON repr.task_id = agg.task_id
+               JOIN tasks t ON t.id = agg.task_id
                JOIN projects p ON t.project_id = p.id
-               WHERE r.status IN ('running', 'pending')
-               GROUP BY t.id
-               ORDER BY is_running DESC,
-                        MIN(r.queue_position) ASC, MIN(r.created_at) ASC"""
+               ORDER BY is_running DESC, repr.queue_position ASC, repr.created_at ASC"""
         ).fetchall()
-        result = []
-        for r in rows:
-            d = dict(r)
-            # Normalize run_status from the grouped result
-            d["run_status"] = "running" if d["is_running"] else "pending"
-            result.append(d)
-        return result
+        return [dict(r) for r in rows]
 
     def reorder_queue(self, run_ids: list[str]) -> None:
         """Set queue_position based on the ordered list of run IDs."""
@@ -470,13 +500,21 @@ class Database:
             """)
             return result.rowcount
 
-    def requeue_stale_runs(self, older_than_iso: str) -> int:
+    def requeue_stale_runs(self, older_than_iso: str) -> list[str]:
+        """Returns affected project IDs so caller can restart workers."""
         with self.tx() as conn:
-            result = conn.execute(
+            affected = conn.execute(
+                """SELECT DISTINCT t.project_id FROM runs r
+                   JOIN tasks t ON r.task_id = t.id
+                   WHERE r.status='running' AND r.started_at < ?""",
+                (older_than_iso,),
+            ).fetchall()
+            project_ids = [row[0] for row in affected]
+            conn.execute(
                 "UPDATE runs SET status='pending' WHERE status='running' AND started_at < ?",
                 (older_than_iso,),
             )
-            return result.rowcount
+            return project_ids
 
     # ── Usage / Aggregation ──
 
@@ -583,15 +621,17 @@ class Database:
     # ── Cleanup ──
 
     def cleanup_old_runs(self, older_than_iso: str) -> list[dict]:
+        """Delete expired runs AND their messages to prevent orphans."""
         rows = self._conn.execute(
-            "SELECT r.session_dir, t.identifier FROM runs r JOIN tasks t ON r.task_id=t.id "
+            "SELECT r.id, r.session_dir, t.identifier FROM runs r JOIN tasks t ON r.task_id=t.id "
             "WHERE r.ended_at IS NOT NULL AND r.ended_at < ?",
             (older_than_iso,),
         ).fetchall()
         dirs = [{"session_dir": r["session_dir"], "identifier": r["identifier"]} for r in rows if r["session_dir"]]
-        self._conn.execute(
-            "DELETE FROM runs WHERE ended_at IS NOT NULL AND ended_at < ?",
-            (older_than_iso,),
-        )
+        run_ids = [r["id"] for r in rows]
+        if run_ids:
+            placeholders = ",".join("?" * len(run_ids))
+            self._conn.execute(f"DELETE FROM messages WHERE run_id IN ({placeholders})", run_ids)
+            self._conn.execute(f"DELETE FROM runs WHERE id IN ({placeholders})", run_ids)
         self._conn.commit()
         return dirs

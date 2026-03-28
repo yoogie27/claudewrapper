@@ -23,11 +23,23 @@
         <div id="gh-results" style="margin-top:8px"></div>
     </div>
 
+    <!-- CLI Backends -->
+    <div class="settings-section">
+        <h3>CLI Backends</h3>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
+            Configure the CLI tools used to run tasks. Each task can use a different backend.
+            Leave the command template empty to use the default.
+        </p>
+        <div id="backends-container" style="display:flex;flex-direction:column;gap:12px">
+            <div style="color:var(--text-dim);font-size:13px">Loading...</div>
+        </div>
+    </div>
+
     <!-- Model Selection -->
     <div class="settings-section">
         <h3>Model Selection</h3>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
-            Choose which Claude model to use for task execution. Use an alias (e.g. <code>opus</code>, <code>sonnet</code>) or a full model name (e.g. <code>claude-sonnet-4-6</code>).
+            Choose which model to use for task execution. For Claude, use an alias (e.g. <code>opus</code>, <code>sonnet</code>) or a full model name.
         </p>
         <div style="display:flex;flex-direction:column;gap:10px">
             <div>
@@ -358,6 +370,48 @@ async function resetModelConfig() {
 }
 
 document.addEventListener('DOMContentLoaded', loadModelConfig);
+
+// ── CLI Backends ──
+async function loadBackends() {
+    try {
+        const resp = await fetch('/api/backends');
+        const backends = await resp.json();
+        const container = document.getElementById('backends-container');
+        container.innerHTML = backends.map(b => `
+            <div style="background:var(--bg-tertiary);border-radius:8px;padding:12px;border:1px solid var(--border)">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                    <strong style="font-size:14px">${esc(b.label)}</strong>
+                    <code style="font-size:11px;color:var(--text-dim)">${esc(b.value)}</code>
+                </div>
+                <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">Command template</label>
+                <input type="text" id="backend-cmd-${b.value}"
+                       value="${esc(b.custom_cmd)}"
+                       placeholder="${esc(b.default_cmd)}"
+                       style="width:100%;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:monospace">
+                <div style="display:flex;gap:8px;margin-top:8px">
+                    <button class="btn btn-sm btn-primary" onclick="saveBackendCmd('${b.value}')">Save</button>
+                    <button class="btn btn-sm btn-secondary" onclick="resetBackendCmd('${b.value}')">Reset</button>
+                </div>
+            </div>
+        `).join('');
+    } catch {}
+}
+async function saveBackendCmd(name) {
+    const cmd = document.getElementById('backend-cmd-' + name).value.trim();
+    try {
+        const resp = await fetch('/api/backends/' + name + '/config', {
+            method: 'PUT', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ command_template: cmd }),
+        });
+        if (resp.ok) toast('Saved', name + ' command updated', 'success');
+    } catch { toast('Error', 'Failed to save', 'error'); }
+}
+async function resetBackendCmd(name) {
+    document.getElementById('backend-cmd-' + name).value = '';
+    await saveBackendCmd(name);
+    toast('Reset', name + ' command reset to default', 'info');
+}
+document.addEventListener('DOMContentLoaded', loadBackends);
 
 // ── Mode Prompts ──
 async function loadModePrompts() {

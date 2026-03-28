@@ -20,6 +20,7 @@ from app.config import settings
 from app.db import Database, utc_now
 from app.orchestrator import Orchestrator
 from app.task_modes import detect_mode, MODE_LABELS, MODE_COLORS
+from app.cli_backend import BACKEND_CHOICES
 from app.ssh import setup_ssh
 from app.prompt_seeds import BUILTIN_PROMPTS
 
@@ -204,6 +205,8 @@ async def update_project(project_id: str, request: Request) -> Any:
 
     allowed = {"name", "base_branch", "default_prompt", "github_repo_url", "github_token"}
     updates = {k: v for k, v in data.items() if k in allowed and v is not None}
+    if "name" in updates and not updates["name"].strip():
+        return JSONResponse({"error": "Name cannot be empty"}, 400)
     if updates:
         db.update_project(project_id, **updates)
     return _sanitize_project(db.get_project(project_id))
@@ -223,11 +226,22 @@ async def delete_project(project_id: str) -> Any:
 @app.get("/api/projects/{project_id}/tasks")
 async def list_tasks(project_id: str, status: str | None = None) -> Any:
     tasks = db.list_tasks(project_id, status)
-    # Attach cost info per task
-    for t in tasks:
-        usage = db.get_usage_for_task(t["id"])
-        t["total_cost_usd"] = usage["total_cost_usd"]
-        t["run_count"] = usage["run_count"]
+    if tasks:
+        task_ids = [t["id"] for t in tasks]
+        placeholders = ",".join("?" * len(task_ids))
+        rows = db._conn.execute(
+            f"""SELECT task_id,
+                       COALESCE(SUM(cost_usd), 0.0) as total_cost_usd,
+                       COUNT(id) as run_count
+                FROM runs WHERE task_id IN ({placeholders}) AND status='done'
+                GROUP BY task_id""",
+            task_ids,
+        ).fetchall()
+        usage_map = {r["task_id"]: dict(r) for r in rows}
+        for t in tasks:
+            u = usage_map.get(t["id"])
+            t["total_cost_usd"] = u["total_cost_usd"] if u else 0.0
+            t["run_count"] = u["run_count"] if u else 0
     return tasks
 
 
@@ -247,8 +261,11 @@ async def create_task(project_id: str, request: Request) -> Any:
     if not mode:
         mode = detect_mode(title + " " + description)
     priority = data.get("priority", "medium").strip()
+    cli_backend = data.get("cli_backend", "claude").strip() or "claude"
+    valid_backends = {b["value"] for b in BACKEND_CHOICES}
+    if cli_backend not in valid_backends:
+        cli_backend = "claude"
 
-    # Generate identifier
     num = db.next_task_number(project_id)
     identifier = f"{project['slug']}-{num:03d}"
     branch_name = f"ticket/{identifier}"
@@ -263,6 +280,7 @@ async def create_task(project_id: str, request: Request) -> Any:
         priority=priority,
         identifier=identifier,
         branch_name=branch_name,
+        cli_backend=cli_backend,
     )
     return task
 
@@ -303,6 +321,8 @@ async def upload_image(task_id: str, request: Request) -> Any:
     upload_dir = settings.data_path() / "uploads" / task_id
     upload_dir.mkdir(parents=True, exist_ok=True)
 
+    allowed_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+
     content_type = request.headers.get("content-type", "")
     if "multipart" in content_type:
         from starlette.datastructures import UploadFile as _UF
@@ -310,7 +330,9 @@ async def upload_image(task_id: str, request: Request) -> Any:
         file = form.get("file")
         if not file or not hasattr(file, "read"):
             return JSONResponse({"error": "No file uploaded"}, 400)
-        ext = Path(file.filename).suffix or ".png"
+        ext = (Path(file.filename).suffix or ".png").lower()
+        if ext not in allowed_exts:
+            return JSONResponse({"error": f"File type {ext} not allowed"}, 400)
         fname = f"{uuid.uuid4().hex[:12]}{ext}"
         fpath = upload_dir / fname
         data = await file.read()
@@ -325,7 +347,9 @@ async def upload_image(task_id: str, request: Request) -> Any:
         if "," in b64:
             b64 = b64.split(",", 1)[1]
         data = base64.b64decode(b64)
-        ext = body.get("ext", ".png")
+        ext = body.get("ext", ".png").lower()
+        if ext not in allowed_exts:
+            return JSONResponse({"error": f"File type {ext} not allowed"}, 400)
         fname = f"{uuid.uuid4().hex[:12]}{ext}"
         fpath = upload_dir / fname
         fpath.write_bytes(data)
@@ -338,7 +362,10 @@ async def upload_image(task_id: str, request: Request) -> Any:
 async def serve_upload(task_id: str, filename: str) -> Any:
     """Serve an uploaded image."""
     from fastapi.responses import FileResponse
-    fpath = settings.data_path() / "uploads" / task_id / filename
+    upload_root = settings.data_path() / "uploads"
+    fpath = (upload_root / task_id / filename).resolve()
+    if not str(fpath).startswith(str(upload_root.resolve()) + "/"):
+        return PlainTextResponse("Forbidden", status_code=403)
     if not fpath.exists():
         return PlainTextResponse("Not found", status_code=404)
     media = "image/png"
@@ -354,8 +381,10 @@ async def serve_upload(task_id: str, filename: str) -> Any:
 # ── Messages & Chat API ──
 
 @app.get("/api/tasks/{task_id}/messages")
-async def list_messages(task_id: str) -> Any:
-    return db.list_messages(task_id)
+async def list_messages(task_id: str, request: Request) -> Any:
+    limit = int(request.query_params.get("limit", "0"))
+    before = request.query_params.get("before", "")
+    return db.list_messages(task_id, limit=limit, before=before)
 
 
 @app.post("/api/tasks/{task_id}/messages")
@@ -512,7 +541,7 @@ async def stream_task(task_id: str) -> Any:
 
 @app.post("/api/tasks/{task_id}/cancel")
 async def cancel_task_run(task_id: str) -> Any:
-    run = db.get_latest_run(task_id)
+    run = db.get_active_run_for_task(task_id)
     if not run or run["status"] != "running":
         return JSONResponse({"error": "No running job to cancel"}, 400)
     ok = orchestrator.cancel_run(run["id"])
@@ -662,7 +691,7 @@ async def diagnose_repo(project_id: str) -> Any:
                 remote_url = ""
 
             # 4. GitHub remote parsed
-            gh = parse_github_remote(repo)
+            gh = await asyncio.to_thread(parse_github_remote, repo)
             if gh:
                 checks.append({"name": "GitHub remote detected", "ok": True, "detail": f"{gh[0]}/{gh[1]}"})
             elif remote_url:
@@ -936,6 +965,29 @@ async def delete_prompt(prompt_id: str) -> Any:
 
 
 # ── Mode Detection API ──
+
+@app.get("/api/backends")
+async def list_backends() -> Any:
+    result = []
+    for b in BACKEND_CHOICES:
+        custom_cmd = db.get_config(f"backend_cmd:{b['value']}", "") or ""
+        result.append({**b, "custom_cmd": custom_cmd})
+    return result
+
+
+@app.put("/api/backends/{backend_name}/config")
+async def update_backend_config(backend_name: str, request: Request) -> Any:
+    valid = {b["value"] for b in BACKEND_CHOICES}
+    if backend_name not in valid:
+        return JSONResponse({"error": f"Unknown backend: {backend_name}"}, 400)
+    data = await request.json()
+    cmd = data.get("command_template", "").strip()
+    if cmd:
+        db.set_config(f"backend_cmd:{backend_name}", cmd)
+    else:
+        db.delete_config(f"backend_cmd:{backend_name}")
+    return {"ok": True}
+
 
 @app.post("/api/detect-mode")
 async def detect_mode_api(request: Request) -> Any:
