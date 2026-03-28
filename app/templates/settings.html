@@ -298,10 +298,11 @@ async function loadModePrompts() {
     try {
         const resp = await fetch('/api/mode-prompts');
         const data = await resp.json();
+        const modeColors = {bug:'#ef4444',feature:'#e11d48',redesign:'#f59e0b'};
         container.innerHTML = Object.entries(data).map(([mode, info]) => `
             <div class="mode-prompt-card">
                 <div class="mode-prompt-header">
-                    <span class="mode-badge" style="background:${{bug:'#ef4444',feature:'#e11d48',redesign:'#f59e0b'}[mode]}">${esc(info.label)}</span>
+                    <span class="mode-badge" style="background:${modeColors[mode]}">${esc(info.label)}</span>
                     ${info.is_custom ? '<span style="font-size:11px;color:var(--accent)">customized</span>' : '<span style="font-size:11px;color:var(--text-dim)">default</span>'}
                     <div style="margin-left:auto;display:flex;gap:6px">
                         ${info.is_custom ? `<button class="btn btn-sm btn-secondary" onclick="resetModePrompt('${mode}')">Reset</button>` : ''}
