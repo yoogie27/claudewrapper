@@ -17,6 +17,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# .NET 8 LTS
+RUN curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet \
+    && ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
+
 # Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
@@ -24,7 +28,7 @@ RUN npm install -g @anthropic-ai/claude-code
 WORKDIR /app
 COPY pyproject.toml .
 COPY app/ app/
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -e . scipy psutil
 
 # Create non-root user (required for Claude Code --dangerously-skip-permissions flag)
 RUN useradd -m -u 1000 claude
