@@ -162,11 +162,17 @@ class Orchestrator:
                 ssh_env = self._get_git_ssh_env()
                 wt_root = self.settings.worktree_path()
                 base_branch = project.get("base_branch", "") or ""
+                # Only reset worktree to base when previous PR was merged.
+                # If PR creation failed, preserve existing commits so work isn't lost.
+                reset_to_base = bool(task.get("pr_merged"))
                 worktree_path = await asyncio.to_thread(
-                    ensure_worktree, workdir, wt_root, identifier, ssh_env, base_branch
+                    ensure_worktree, workdir, wt_root, identifier, ssh_env, base_branch, reset_to_base
                 )
                 write_worktree_meta(session_dir, workdir, worktree_path)
                 self.db.update_task(task["id"], worktree_path=str(worktree_path))
+                if reset_to_base:
+                    # Clear merged flag after reset so subsequent runs preserve work
+                    self.db.update_task(task["id"], pr_merged=0, pr_url=None)
                 workdir = worktree_path
             except Exception as exc:
                 error_str = str(exc)

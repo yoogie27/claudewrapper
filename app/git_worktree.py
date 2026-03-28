@@ -56,7 +56,7 @@ def get_default_branch(repo: Path) -> str:
     return "main"
 
 
-def ensure_worktree(repo: Path, worktree_root: Path, identifier: str, env: dict[str, str] | None = None, base_branch: str = "") -> Path:
+def ensure_worktree(repo: Path, worktree_root: Path, identifier: str, env: dict[str, str] | None = None, base_branch: str = "", reset_to_base: bool = True) -> Path:
     repo = repo.resolve()
     worktree_root = worktree_root.resolve()
     worktree_root.mkdir(parents=True, exist_ok=True)
@@ -81,25 +81,34 @@ def ensure_worktree(repo: Path, worktree_root: Path, identifier: str, env: dict[
             base_ref = base
 
     if worktree_path.exists():
-        # Always reset to latest main.  With concurrency=1 per project
-        # there is no in-progress work to preserve, and starting from a
-        # stale base causes merge-conflict failures on the resulting PR.
-        try:
-            _run(["git", "-C", str(worktree_path), "checkout", branch])
-            _run(["git", "-C", str(worktree_path), "reset", "--hard", base_ref])
-            _run(["git", "-C", str(worktree_path), "clean", "-fd"])
-        except Exception:
-            # Reset failed — tear down and recreate below
+        if reset_to_base:
+            # Reset to latest base branch. Only done when previous work was
+            # successfully PR'd/merged so we don't destroy uncommitted work.
             try:
-                _run(["git", "-C", str(repo), "worktree", "remove", "-f", str(worktree_path)])
+                _run(["git", "-C", str(worktree_path), "checkout", branch])
+                _run(["git", "-C", str(worktree_path), "reset", "--hard", base_ref])
+                _run(["git", "-C", str(worktree_path), "clean", "-fd"])
             except Exception:
-                import shutil
-                shutil.rmtree(worktree_path, ignore_errors=True)
+                # Reset failed — tear down and recreate below
                 try:
-                    _run(["git", "-C", str(repo), "worktree", "prune"])
+                    _run(["git", "-C", str(repo), "worktree", "remove", "-f", str(worktree_path)])
                 except Exception:
-                    pass
+                    import shutil
+                    shutil.rmtree(worktree_path, ignore_errors=True)
+                    try:
+                        _run(["git", "-C", str(repo), "worktree", "prune"])
+                    except Exception:
+                        pass
+            else:
+                return worktree_path
         else:
+            # Preserve existing worktree — previous work wasn't PR'd yet.
+            # Just clean untracked files but keep commits intact.
+            try:
+                _run(["git", "-C", str(worktree_path), "checkout", branch])
+                _run(["git", "-C", str(worktree_path), "clean", "-fd"])
+            except Exception:
+                pass
             return worktree_path
 
     # Prune stale worktree records (e.g. after manual cleanup or disk wipe)
