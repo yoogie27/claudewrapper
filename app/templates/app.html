@@ -274,7 +274,7 @@ function renderProjects() {
     });
 }
 
-async function selectProject(id) {
+async function selectProject(id, {autoSelectTask = true} = {}) {
     state.currentProject = state.projects.find(p => p.id === id);
     if (!state.currentProject) return;
     localStorage.setItem('cw-project', id);
@@ -282,6 +282,28 @@ async function selectProject(id) {
     renderProjects();
     await loadTasks();
     startActionsPoll();
+
+    if (autoSelectTask) {
+        // Auto-select a task: prefer running/in_progress, then first in list (newest)
+        const activeTask = state.tasks.find(t => t.status === 'running' || t.status === 'in_progress');
+        const bestTask = activeTask || state.tasks[0];
+        if (bestTask) {
+            await selectTask(bestTask.id);
+        } else {
+            // No tasks in this project — clear stale chat from previous project
+            state.currentTask = null;
+            localStorage.removeItem('cw-task');
+            document.getElementById('chat-empty').style.display = 'flex';
+            document.getElementById('chat-messages').style.display = 'none';
+            document.getElementById('chat-input-area').style.display = 'none';
+            if (state.streamSource) {
+                state.streamSource.close();
+                state.streamSource = null;
+                state.streaming = false;
+                state.streamingTaskId = null;
+            }
+        }
+    }
     showPanel('tasks');
 }
 
@@ -1494,7 +1516,7 @@ function renderQueue() {
         return `
         <div class="queue-item" data-run-id="${item.run_id}" data-idx="${idx}"
              draggable="${isRunning ? 'false' : 'true'}"
-             onclick="selectProject('${item.project_id}');setTimeout(()=>selectTask('${item.task_id}'),300)">
+             onclick="selectProject('${item.project_id}',{autoSelectTask:false});setTimeout(()=>selectTask('${item.task_id}'),300)">
             ${isRunning ? '' : '<span class="queue-item-grip">&#8942;</span>'}
             <div class="queue-item-info">
                 <div class="queue-item-task">${esc(item.identifier)} ${esc(item.task_title)}</div>
@@ -1655,12 +1677,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const savedTask = localStorage.getItem('cw-task');
 
     if (savedProject && state.projects.find(p => p.id === savedProject)) {
-        await selectProject(savedProject);
-        if (savedTask) {
-            // selectProject loaded tasks, now try to select the saved task
-            if (state.tasks.find(t => t.id === savedTask)) {
-                await selectTask(savedTask);
-            }
+        const hasSavedTask = !!savedTask;
+        // Skip auto-select if we have a saved task to restore
+        await selectProject(savedProject, {autoSelectTask: !hasSavedTask});
+        if (hasSavedTask && state.tasks.find(t => t.id === savedTask)) {
+            await selectTask(savedTask);
         }
     } else if (state.projects.length === 1) {
         await selectProject(state.projects[0].id);
