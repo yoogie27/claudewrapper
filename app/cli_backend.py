@@ -89,11 +89,13 @@ class CliBackend(ABC):
                 proc.stdin.close()
 
             disk_full = False
+            stdout_lines: list[str] = []
             with open(stdout_path, "w", encoding="utf-8") as out_f:
                 while True:
                     line = proc.stdout.readline()
                     if not line:
                         break
+                    stdout_lines.append(line)
                     if not disk_full:
                         try:
                             out_f.write(line)
@@ -102,7 +104,8 @@ class CliBackend(ABC):
                             disk_full = True
             proc.wait()
 
-        stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
+        # Use collected lines instead of re-reading the entire file from disk
+        stdout = "".join(stdout_lines)
         stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
         result = self.parse_result(stdout)
         result.returncode = proc.returncode
@@ -168,12 +171,42 @@ class ClaudeBackend(CliBackend):
             return RunResult(returncode=-1, stdout="", stderr="", summary="No output captured.")
         result = RunResult(returncode=0, stdout=stdout, stderr="")
         lines = text.splitlines()
-        for line in reversed(lines):
-            line = line.strip()
-            if not line:
+
+        # Single forward pass: collect assistant text and session_id as we go.
+        # The "result" line is always last, so we check in reverse only for that.
+        assistant_text: list[str] = []
+        session_id: str | None = None
+        uuid_pat = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
                 continue
             try:
-                obj = json.loads(line)
+                obj = json.loads(stripped)
+                if not isinstance(obj, dict):
+                    continue
+                # Extract session_id early (appears in first few lines)
+                if not session_id:
+                    for key in ("session_id", "sessionId"):
+                        val = obj.get(key, "")
+                        if val and re.fullmatch(uuid_pat, val):
+                            session_id = val
+                            break
+                if obj.get("type") == "assistant":
+                    content = (obj.get("message") or {}).get("content", [])
+                    for block in (content if isinstance(content, list) else []):
+                        if block.get("type") == "text":
+                            assistant_text.append(block["text"])
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        # Check last non-empty lines for "result" type (reverse scan, usually 1-2 lines)
+        for line in reversed(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                obj = json.loads(stripped)
                 if isinstance(obj, dict) and obj.get("type") == "result":
                     result.cost_usd = obj.get("total_cost_usd", 0.0) or 0.0
                     usage = obj.get("usage", {}) or {}
@@ -187,30 +220,18 @@ class ClaudeBackend(CliBackend):
                         summary = str(raw).strip()
                     if summary:
                         result.summary = summary
-                        result.session_id = self._extract_session_id(stdout)
+                        result.session_id = session_id
                         return result
-                    break
+                break  # Only check the last non-empty JSON line
             except (json.JSONDecodeError, ValueError):
                 continue
-        assistant_text = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                if isinstance(obj, dict) and obj.get("type") == "assistant":
-                    content = (obj.get("message") or {}).get("content", [])
-                    for block in (content if isinstance(content, list) else []):
-                        if block.get("type") == "text":
-                            assistant_text.append(block["text"])
-            except (json.JSONDecodeError, ValueError):
-                continue
+
+        # Fallback: use assistant text or raw output
         if assistant_text:
             result.summary = "\n".join(assistant_text).strip()[:5000]
         else:
             result.summary = text[:5000]
-        result.session_id = self._extract_session_id(stdout)
+        result.session_id = session_id
         return result
 
     @staticmethod
