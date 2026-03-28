@@ -33,9 +33,14 @@ def _classify_push_error(stderr: str) -> str:
     return "unknown"
 
 
-def _run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
+def _run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None,
+         timeout: int = 120) -> str:
     run_env = {**os.environ, **env} if env else None
-    result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, env=run_env)
+    try:
+        result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, env=run_env,
+                                timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise GitWorktreeError(f"git command timed out after {timeout}s: {' '.join(cmd[:3])}")
     if result.returncode != 0:
         raise GitWorktreeError(result.stderr.strip() or result.stdout.strip() or "git command failed")
     return (result.stdout or "").strip()
