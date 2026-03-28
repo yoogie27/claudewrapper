@@ -23,6 +23,32 @@
         <div id="gh-results" style="margin-top:8px"></div>
     </div>
 
+    <!-- Model Selection -->
+    <div class="settings-section">
+        <h3>Model Selection</h3>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
+            Choose which Claude model to use for task execution. Use an alias (e.g. <code>opus</code>, <code>sonnet</code>) or a full model name (e.g. <code>claude-sonnet-4-6</code>).
+        </p>
+        <div style="display:flex;flex-direction:column;gap:10px">
+            <div>
+                <label style="font-size:13px;color:var(--text-muted);display:block;margin-bottom:4px">Model (--model)</label>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <input type="text" id="model-input" placeholder="opus" style="flex:1;padding:6px 10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px">
+                </div>
+            </div>
+            <div>
+                <label style="font-size:13px;color:var(--text-muted);display:block;margin-bottom:4px">Fallback Model (--fallback-model)</label>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <input type="text" id="fallback-model-input" placeholder="sonnet" style="flex:1;padding:6px 10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px">
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:4px">
+                <button class="btn btn-sm btn-primary" onclick="saveModelConfig()">Save</button>
+                <button class="btn btn-sm btn-secondary" onclick="resetModelConfig()">Reset to Default</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Mode Prompts -->
     <div class="settings-section">
         <h3>Task Mode Prompts</h3>
@@ -291,6 +317,47 @@ async function copySSHKey() {
         setTimeout(() => { btn.textContent = 'Copy to Clipboard'; }, 2000);
     }
 }
+
+// ── Model Config ──
+async function loadModelConfig() {
+    try {
+        const resp = await fetch('/api/model-config');
+        const data = await resp.json();
+        document.getElementById('model-input').value = data.model || '';
+        document.getElementById('fallback-model-input').value = data.fallback_model || '';
+    } catch {}
+}
+
+async function saveModelConfig() {
+    const model = document.getElementById('model-input').value.trim();
+    const fallback = document.getElementById('fallback-model-input').value.trim();
+    try {
+        const resp = await fetch('/api/model-config', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ model: model, fallback_model: fallback }),
+        });
+        if (resp.ok) toast('Saved', 'Model configuration updated', 'success');
+    } catch { toast('Error', 'Failed to save', 'error'); }
+}
+
+async function resetModelConfig() {
+    if (!confirm('Reset model config? This will clear both fields (Claude will use its default model).')) return;
+    try {
+        const resp = await fetch('/api/model-config', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ model: '', fallback_model: '' }),
+        });
+        if (resp.ok) {
+            document.getElementById('model-input').value = '';
+            document.getElementById('fallback-model-input').value = '';
+            toast('Reset', 'Model config cleared', 'info');
+        }
+    } catch { toast('Error', 'Failed to reset', 'error'); }
+}
+
+document.addEventListener('DOMContentLoaded', loadModelConfig);
 
 // ── Mode Prompts ──
 async function loadModePrompts() {

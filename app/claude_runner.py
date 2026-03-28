@@ -26,6 +26,9 @@ class ClaudeRunner:
         self.workdir_mode = workdir_mode
         # MCP config to inject into workdir (set by orchestrator)
         self.mcp_config: dict | None = None
+        # Model selection (set by orchestrator before each run)
+        self.model: str = ""
+        self.fallback_model: str = ""
 
     def _format_command(self, prompt_path: Path, workdir: Path | None, prompt_text: str, resume_session_id: str | None = None) -> list[str]:
         # Build substitution dict — provide all possible placeholders so old
@@ -52,6 +55,11 @@ class ClaudeRunner:
             rendered = rendered + ' --verbose'
 
         cmd = shlex.split(rendered)
+        # Inject --model and --fallback-model if configured (and not already in template)
+        if self.model and "--model" not in cmd:
+            cmd.extend(["--model", self.model])
+        if self.fallback_model and "--fallback-model" not in cmd:
+            cmd.extend(["--fallback-model", self.fallback_model])
         # Append --resume if we have a prior Claude session UUID to continue
         # (only if not already present from the template)
         if resume_session_id and "--resume" not in cmd:

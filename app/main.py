@@ -719,6 +719,32 @@ async def get_ssh_public_key() -> Any:
         return {"ok": False, "error": str(exc)}
 
 
+# ── Model Config API ──
+
+@app.get("/api/model-config")
+async def get_model_config() -> Any:
+    """Get current model selection settings."""
+    return {
+        "model": db.get_config("claude_model", "") or "",
+        "fallback_model": db.get_config("claude_fallback_model", "") or "",
+    }
+
+
+@app.put("/api/model-config")
+async def set_model_config(request: Request) -> Any:
+    """Set model selection. Send empty string to clear."""
+    data = await request.json()
+    for key in ("model", "fallback_model"):
+        if key in data:
+            value = data[key].strip()
+            db_key = f"claude_{key}"
+            if value:
+                db.set_config(db_key, value)
+            else:
+                db.delete_config(db_key)
+    return {"ok": True}
+
+
 # ── Mode Prompts API ──
 
 @app.get("/api/mode-prompts")
