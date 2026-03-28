@@ -205,6 +205,10 @@ class Orchestrator:
             self.db.update_task(task["id"], status=task_status)
             return
 
+        # Apply model selection from settings
+        self.runner.model = self.db.get_config("claude_model", "") or ""
+        self.runner.fallback_model = self.db.get_config("claude_fallback_model", "") or ""
+
         proc_holder: dict = {}
         self._proc_holders[run_id] = proc_holder
         ssh_env = self._get_git_ssh_env()
