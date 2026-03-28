@@ -548,6 +548,21 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_usage_for_tasks(self, task_ids: list[str]) -> dict[str, dict]:
+        """Get cost/run summaries for multiple tasks in a single query."""
+        if not task_ids:
+            return {}
+        placeholders = ",".join("?" * len(task_ids))
+        rows = self._conn.execute(
+            f"""SELECT task_id,
+                       COALESCE(SUM(cost_usd), 0.0) as total_cost_usd,
+                       COUNT(id) as run_count
+                FROM runs WHERE task_id IN ({placeholders}) AND status='done'
+                GROUP BY task_id""",
+            task_ids,
+        ).fetchall()
+        return {r["task_id"]: dict(r) for r in rows}
+
     def get_usage_for_task(self, task_id: str) -> dict:
         row = self._conn.execute(
             """SELECT COALESCE(SUM(input_tokens), 0) as total_input_tokens,
@@ -641,6 +656,7 @@ class Database:
 
         Also cleans up user messages (run_id IS NULL) for tasks whose
         runs are ALL being deleted, preventing gradual DB bloat.
+        Uses a transaction so all deletes are atomic.
         """
         rows = self._conn.execute(
             "SELECT r.id, r.session_dir, r.task_id, t.identifier FROM runs r JOIN tasks t ON r.task_id=t.id "
@@ -650,18 +666,18 @@ class Database:
         dirs = [{"session_dir": r["session_dir"], "identifier": r["identifier"]} for r in rows if r["session_dir"]]
         run_ids = [r["id"] for r in rows]
         if run_ids:
-            placeholders = ",".join("?" * len(run_ids))
-            self._conn.execute(f"DELETE FROM messages WHERE run_id IN ({placeholders})", run_ids)
-            self._conn.execute(f"DELETE FROM runs WHERE id IN ({placeholders})", run_ids)
+            with self.tx() as conn:
+                placeholders = ",".join("?" * len(run_ids))
+                conn.execute(f"DELETE FROM messages WHERE run_id IN ({placeholders})", run_ids)
+                conn.execute(f"DELETE FROM runs WHERE id IN ({placeholders})", run_ids)
 
-            # Clean orphaned user messages (run_id IS NULL) for tasks that
-            # have no remaining runs after cleanup.
-            expired_task_ids = list({r["task_id"] for r in rows})
-            task_ph = ",".join("?" * len(expired_task_ids))
-            self._conn.execute(
-                f"DELETE FROM messages WHERE task_id IN ({task_ph}) AND run_id IS NULL "
-                f"AND task_id NOT IN (SELECT DISTINCT task_id FROM runs)",
-                expired_task_ids,
-            )
-        self._conn.commit()
+                # Clean orphaned user messages (run_id IS NULL) for tasks that
+                # have no remaining runs after cleanup.
+                expired_task_ids = list({r["task_id"] for r in rows})
+                task_ph = ",".join("?" * len(expired_task_ids))
+                conn.execute(
+                    f"DELETE FROM messages WHERE task_id IN ({task_ph}) AND run_id IS NULL "
+                    f"AND task_id NOT IN (SELECT DISTINCT task_id FROM runs)",
+                    expired_task_ids,
+                )
         return dirs

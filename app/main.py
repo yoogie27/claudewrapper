@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
+import os
 import re
+import shutil
+import sqlite3
+import subprocess
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -41,6 +48,8 @@ async def lifespan(app: FastAPI):
         logging.getLogger("claudewrapper").warning("SSH setup failed: %s", exc)
     await orchestrator.start()
     yield
+    # Signal background loops (_reaper_loop, _cleanup_loop) to stop
+    orchestrator.stop_event.set()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -120,9 +129,8 @@ async def create_project(request: Request) -> Any:
     # Clone from GitHub URL if provided and directory is empty
     clone_error = ""
     if github_url and not (repo_path / ".git").exists():
-        import subprocess, sys
         ssh_env = orchestrator._get_git_ssh_env()
-        env = {**__import__('os').environ, **(ssh_env or {})}
+        env = {**os.environ, **(ssh_env or {})}
         try:
             cflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             result = subprocess.run(
@@ -136,7 +144,6 @@ async def create_project(request: Request) -> Any:
 
     # Init a bare repo if no git repo exists (no URL or clone failed)
     if not (repo_path / ".git").exists() and not clone_error:
-        import subprocess, sys
         cflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         subprocess.run(["git", "init", str(repo_path)], capture_output=True, creationflags=cflags)
 
@@ -152,7 +159,7 @@ async def create_project(request: Request) -> Any:
             github_repo_url=github_url,
             github_token=data.get("github_token", "").strip(),
         )
-    except Exception:
+    except sqlite3.IntegrityError:
         # UNIQUE constraint race: slug was taken between check and insert
         slug = f"{slug}-{uuid.uuid4().hex[:6]}"
         project = db.create_project(
@@ -186,15 +193,13 @@ async def reclone_project(project_id: str) -> Any:
     repo_path = settings.project_repo_path(project["slug"])
 
     # Wipe existing directory
-    import shutil
     if repo_path.exists():
         shutil.rmtree(str(repo_path), ignore_errors=True)
     repo_path.mkdir(parents=True, exist_ok=True)
 
     # Clone
-    import subprocess, sys
     ssh_env = orchestrator._get_git_ssh_env()
-    env = {**__import__('os').environ, **(ssh_env or {})}
+    env = {**os.environ, **(ssh_env or {})}
     try:
         cflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         result = subprocess.run(
@@ -242,16 +247,7 @@ async def list_tasks(project_id: str, status: str | None = None) -> Any:
     tasks = db.list_tasks(project_id, status)
     if tasks:
         task_ids = [t["id"] for t in tasks]
-        placeholders = ",".join("?" * len(task_ids))
-        rows = db._conn.execute(
-            f"""SELECT task_id,
-                       COALESCE(SUM(cost_usd), 0.0) as total_cost_usd,
-                       COUNT(id) as run_count
-                FROM runs WHERE task_id IN ({placeholders}) AND status='done'
-                GROUP BY task_id""",
-            task_ids,
-        ).fetchall()
-        usage_map = {r["task_id"]: dict(r) for r in rows}
+        usage_map = db.get_usage_for_tasks(task_ids)
         for t in tasks:
             u = usage_map.get(t["id"])
             t["total_cost_usd"] = u["total_cost_usd"] if u else 0.0
@@ -356,7 +352,6 @@ async def upload_image(task_id: str, request: Request) -> Any:
         b64 = body.get("data", "")
         if not b64:
             return JSONResponse({"error": "No image data"}, 400)
-        import base64, binascii
         # Strip data URI prefix if present
         if "," in b64:
             b64 = b64.split(",", 1)[1]
