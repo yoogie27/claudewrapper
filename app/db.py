@@ -621,9 +621,13 @@ class Database:
     # ── Cleanup ──
 
     def cleanup_old_runs(self, older_than_iso: str) -> list[dict]:
-        """Delete expired runs AND their messages to prevent orphans."""
+        """Delete expired runs AND their messages to prevent orphans.
+
+        Also cleans up user messages (run_id IS NULL) for tasks whose
+        runs are ALL being deleted, preventing gradual DB bloat.
+        """
         rows = self._conn.execute(
-            "SELECT r.id, r.session_dir, t.identifier FROM runs r JOIN tasks t ON r.task_id=t.id "
+            "SELECT r.id, r.session_dir, r.task_id, t.identifier FROM runs r JOIN tasks t ON r.task_id=t.id "
             "WHERE r.ended_at IS NOT NULL AND r.ended_at < ?",
             (older_than_iso,),
         ).fetchall()
@@ -633,5 +637,15 @@ class Database:
             placeholders = ",".join("?" * len(run_ids))
             self._conn.execute(f"DELETE FROM messages WHERE run_id IN ({placeholders})", run_ids)
             self._conn.execute(f"DELETE FROM runs WHERE id IN ({placeholders})", run_ids)
+
+            # Clean orphaned user messages (run_id IS NULL) for tasks that
+            # have no remaining runs after cleanup.
+            expired_task_ids = list({r["task_id"] for r in rows})
+            task_ph = ",".join("?" * len(expired_task_ids))
+            self._conn.execute(
+                f"DELETE FROM messages WHERE task_id IN ({task_ph}) AND run_id IS NULL "
+                f"AND task_id NOT IN (SELECT DISTINCT task_id FROM runs)",
+                expired_task_ids,
+            )
         self._conn.commit()
         return dirs

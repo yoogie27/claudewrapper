@@ -330,7 +330,7 @@ async def upload_image(task_id: str, request: Request) -> Any:
         file = form.get("file")
         if not file or not hasattr(file, "read"):
             return JSONResponse({"error": "No file uploaded"}, 400)
-        ext = (Path(file.filename).suffix or ".png").lower()
+        ext = (Path(file.filename).suffix if file.filename else ".png").lower() or ".png"
         if ext not in allowed_exts:
             return JSONResponse({"error": f"File type {ext} not allowed"}, 400)
         fname = f"{uuid.uuid4().hex[:12]}{ext}"
@@ -382,7 +382,10 @@ async def serve_upload(task_id: str, filename: str) -> Any:
 
 @app.get("/api/tasks/{task_id}/messages")
 async def list_messages(task_id: str, request: Request) -> Any:
-    limit = int(request.query_params.get("limit", "0"))
+    try:
+        limit = int(request.query_params.get("limit", "0"))
+    except (ValueError, TypeError):
+        limit = 0
     before = request.query_params.get("before", "")
     return db.list_messages(task_id, limit=limit, before=before)
 
@@ -470,18 +473,20 @@ async def stream_task(task_id: str) -> Any:
                 line_buffer = ""
                 stale_ticks = 0
 
-            # Read output from this run's stdout file
+            # Read only NEW output from this run's stdout file (seek to pos)
             had_output = False
             session_dir = active.get("session_dir")
             if session_dir:
                 stdout_path = Path(session_dir) / "stdout.txt"
                 if stdout_path.exists():
                     try:
-                        raw = stdout_path.read_text(encoding="utf-8", errors="replace")
-                        if len(raw) > pos:
+                        with open(stdout_path, "r", encoding="utf-8", errors="replace") as f:
+                            f.seek(pos)
+                            chunk = f.read()
+                            new_pos = f.tell()
+                        if chunk:
                             had_output = True
-                            chunk = raw[pos:]
-                            pos = len(raw)
+                            pos = new_pos
                             chunk = line_buffer + chunk
                             if chunk.endswith("\n"):
                                 lines = chunk.splitlines()

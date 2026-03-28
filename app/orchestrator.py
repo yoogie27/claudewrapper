@@ -14,6 +14,7 @@ import httpx
 from app.cli_backend import CliBackend, ClaudeBackend, create_backend, BACKENDS
 from app.config import Settings
 from app.db import Database, utc_now
+from app.sanitize import fence_user_content, sanitize_for_prompt
 from app.task_modes import get_mode_prompt
 from app.utils import setup_logger
 from app.git_worktree import (
@@ -254,6 +255,13 @@ class Orchestrator:
         exit_code = run_result.returncode
         self.logger.info("[%s] %s exited with code %d", identifier, backend.display_name, exit_code)
 
+        # Check if the run was cancelled while the process was running.
+        # cancel_run() sets status="failed" — don't overwrite that.
+        current_run = self.db.get_run(run_id)
+        if current_run and current_run["status"] == "failed":
+            self.logger.info("[%s] Run %s was cancelled during execution, skipping post-processing", identifier, run_id)
+            return
+
         new_session_id = run_result.session_id
         if new_session_id:
             self.db.update_task(task["id"], claude_session_id=new_session_id)
@@ -339,7 +347,7 @@ class Orchestrator:
         ]
 
         if task.get("description"):
-            parts.extend(["", "## Description", task["description"]])
+            parts.extend(["", "## Description", sanitize_for_prompt(task["description"])])
 
         # Conversation history (limit to last 20 messages to avoid prompt bloat)
         if messages:
@@ -354,6 +362,9 @@ class Orchestrator:
                 if msg["role"] == "assistant" and len(content) > 2000:
                     content = content[:2000] + "\n\n[...truncated]"
                 parts.append(f"**[{role_label}]:**")
+                # Fence user-provided content to reduce prompt injection risk
+                if msg["role"] == "user":
+                    content = fence_user_content(sanitize_for_prompt(content), label="user message")
                 parts.append(content)
                 parts.append("")
 
