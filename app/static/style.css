@@ -543,6 +543,17 @@ html.dark .task-item.active { background: #2a1520; }
     font-weight: 600;
     text-transform: capitalize;
 }
+.backend-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    background: #e8e0f0;
+    color: #7c3aed;
+    letter-spacing: 0.3px;
+}
 .badge-open { background: var(--info-bg); color: var(--info); }
 .badge-in_progress { background: var(--accent-light); color: var(--accent); position: relative; padding-left: 22px; }
 .badge-in_progress::before {

@@ -55,6 +55,11 @@
                     <option value="high">High</option>
                     <option value="urgent">Urgent</option>
                 </select>
+                <select id="quick-task-backend" title="CLI Backend">
+                    <option value="claude">Claude</option>
+                    <option value="gemini">Gemini</option>
+                    <option value="codex">Codex</option>
+                </select>
                 <button class="btn-icon" onclick="toggleDesc()" title="Add description" style="font-size:14px">&#9998;</button>
                 <button class="btn btn-primary btn-sm" onclick="createTask()">Create</button>
             </div>
@@ -386,6 +391,7 @@ function renderTasks() {
                 <span class="mode-dot" style="background:${state.modeColors[t.mode] || '#e11d48'}"></span>
                 <span class="task-item-id">${esc(t.identifier)}</span>
                 <span class="badge badge-${t.status}">${t.status.replace('_', ' ')}</span>
+                ${t.cli_backend && t.cli_backend !== 'claude' ? `<span class="backend-tag">${esc(t.cli_backend)}</span>` : ''}
                 ${unreadBadge}
             </div>
             <div class="task-item-title">${esc(t.title)}</div>
@@ -490,7 +496,8 @@ async function createTask() {
     const priority = document.getElementById('quick-task-priority').value;
     const description = document.getElementById('quick-task-desc').value.trim();
 
-    const body = { title, priority, description };
+    const cli_backend = document.getElementById('quick-task-backend').value;
+    const body = { title, priority, description, cli_backend };
     if (_manualMode) body.mode = _manualMode;
     const resp = await fetch(`/api/projects/${state.currentProject.id}/tasks`, {
         method: 'POST',
