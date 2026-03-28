@@ -415,15 +415,11 @@ class Database:
         return row is not None
 
     def get_active_run_for_task(self, task_id: str) -> dict | None:
-        """Get the current active run for a task: prefer running, then oldest pending."""
+        """Get the current active run for a task: prefer running, then oldest pending.
+        Single query instead of two sequential SELECTs — this is on the SSE hot path."""
         row = self._conn.execute(
-            "SELECT * FROM runs WHERE task_id=? AND status='running' LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        if row:
-            return dict(row)
-        row = self._conn.execute(
-            "SELECT * FROM runs WHERE task_id=? AND status='pending' ORDER BY created_at ASC LIMIT 1",
+            "SELECT * FROM runs WHERE task_id=? AND status IN ('running', 'pending') "
+            "ORDER BY (status = 'running') DESC, created_at ASC LIMIT 1",
             (task_id,),
         ).fetchone()
         return dict(row) if row else None
@@ -477,11 +473,12 @@ class Database:
 
     def reorder_queue(self, run_ids: list[str]) -> None:
         """Set queue_position based on the ordered list of run IDs."""
-        for pos, run_id in enumerate(run_ids):
-            self._conn.execute(
-                "UPDATE runs SET queue_position=? WHERE id=? AND status='pending'",
-                (pos, run_id),
-            )
+        if not run_ids:
+            return
+        self._conn.executemany(
+            "UPDATE runs SET queue_position=? WHERE id=? AND status='pending'",
+            [(pos, run_id) for pos, run_id in enumerate(run_ids)],
+        )
         self._conn.commit()
 
     def fail_orphaned_runs(self) -> int:
@@ -636,18 +633,29 @@ class Database:
         self._conn.commit()
 
     def seed_prompts(self, prompts: list[dict]) -> int:
-        """Insert builtin prompts that don't already exist. Returns count of inserted."""
-        count = 0
-        for p in prompts:
-            existing = self.get_prompt_by_command(p["slash_command"])
-            if not existing:
-                self.create_prompt(
-                    id=p["id"], slash_command=p["slash_command"], title=p["title"],
-                    prompt=p["prompt"], description=p.get("description", ""),
-                    category=p.get("category", "general"), is_builtin=True,
-                )
-                count += 1
-        return count
+        """Insert builtin prompts that don't already exist. Returns count of inserted.
+        Uses a single query to fetch existing commands instead of N+1 lookups."""
+        if not prompts:
+            return 0
+        existing_cmds = {
+            row[0] for row in self._conn.execute(
+                "SELECT slash_command FROM prompt_library"
+            ).fetchall()
+        }
+        now = utc_now()
+        to_insert = [
+            (p["id"], p["slash_command"], p["title"], p.get("description", ""),
+             p["prompt"], p.get("category", "general"), 1, now, now)
+            for p in prompts if p["slash_command"] not in existing_cmds
+        ]
+        if to_insert:
+            self._conn.executemany(
+                """INSERT INTO prompt_library(id, slash_command, title, description, prompt, category, is_builtin, created_at, updated_at)
+                   VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                to_insert,
+            )
+            self._conn.commit()
+        return len(to_insert)
 
     # ── Cleanup ──
 
