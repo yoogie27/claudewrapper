@@ -111,6 +111,7 @@ class Orchestrator:
         while not self.stop_event.is_set():
             # Check global pause
             if self.db.get_config("queue_paused") == "1":
+                idle_cycles = 0  # Don't count paused time toward idle timeout
                 await asyncio.sleep(3)
                 continue
 
@@ -606,7 +607,12 @@ class Orchestrator:
             await asyncio.sleep(300)  # every 5 min
             try:
                 cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.settings.stale_job_timeout_minutes)
-                project_ids = self.db.requeue_stale_runs(cutoff.isoformat())
+                # Don't requeue runs that still have a live process in this server
+                live_run_ids = {
+                    rid for rid, holder in self._proc_holders.items()
+                    if holder.get("proc") and holder["proc"].poll() is None
+                }
+                project_ids = self.db.requeue_stale_runs(cutoff.isoformat(), exclude_run_ids=live_run_ids)
                 if project_ids:
                     self.logger.info("Reaper: requeued stale runs for %d projects", len(project_ids))
                     for pid in project_ids:

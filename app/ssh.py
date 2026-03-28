@@ -90,8 +90,9 @@ def get_git_ssh_env(key_dir: Path) -> dict[str, str]:
     """Return environment dict to inject into git subprocess calls for SSH auth."""
     config_path = key_dir / "config"
     known_hosts = key_dir / "known_hosts"
+    # Quote paths to handle spaces in directory names
     return {
-        "GIT_SSH_COMMAND": f"ssh -F {config_path} -o UserKnownHostsFile={known_hosts} -o StrictHostKeyChecking=accept-new",
+        "GIT_SSH_COMMAND": f'ssh -F "{config_path}" -o "UserKnownHostsFile={known_hosts}" -o StrictHostKeyChecking=accept-new',
     }
 
 

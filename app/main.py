@@ -141,16 +141,30 @@ async def create_project(request: Request) -> Any:
         subprocess.run(["git", "init", str(repo_path)], capture_output=True, creationflags=cflags)
 
     project_id = uuid.uuid4().hex
-    project = db.create_project(
-        id=project_id,
-        name=name,
-        slug=slug,
-        local_path=str(repo_path),
-        base_branch=data.get("base_branch", "main") or "main",
-        default_prompt=data.get("default_prompt", ""),
-        github_repo_url=github_url,
-        github_token=data.get("github_token", "").strip(),
-    )
+    try:
+        project = db.create_project(
+            id=project_id,
+            name=name,
+            slug=slug,
+            local_path=str(repo_path),
+            base_branch=data.get("base_branch", "main") or "main",
+            default_prompt=data.get("default_prompt", ""),
+            github_repo_url=github_url,
+            github_token=data.get("github_token", "").strip(),
+        )
+    except Exception:
+        # UNIQUE constraint race: slug was taken between check and insert
+        slug = f"{slug}-{uuid.uuid4().hex[:6]}"
+        project = db.create_project(
+            id=project_id,
+            name=name,
+            slug=slug,
+            local_path=str(repo_path),
+            base_branch=data.get("base_branch", "main") or "main",
+            default_prompt=data.get("default_prompt", ""),
+            github_repo_url=github_url,
+            github_token=data.get("github_token", "").strip(),
+        )
 
     result = _sanitize_project(project)
     if clone_error:
@@ -342,11 +356,14 @@ async def upload_image(task_id: str, request: Request) -> Any:
         b64 = body.get("data", "")
         if not b64:
             return JSONResponse({"error": "No image data"}, 400)
-        import base64
+        import base64, binascii
         # Strip data URI prefix if present
         if "," in b64:
             b64 = b64.split(",", 1)[1]
-        data = base64.b64decode(b64)
+        try:
+            data = base64.b64decode(b64)
+        except (binascii.Error, ValueError):
+            return JSONResponse({"error": "Invalid base64 data"}, 400)
         ext = body.get("ext", ".png").lower()
         if ext not in allowed_exts:
             return JSONResponse({"error": f"File type {ext} not allowed"}, 400)
@@ -368,13 +385,13 @@ async def serve_upload(task_id: str, filename: str) -> Any:
         return PlainTextResponse("Forbidden", status_code=403)
     if not fpath.exists():
         return PlainTextResponse("Not found", status_code=404)
-    media = "image/png"
-    if filename.endswith(".jpg") or filename.endswith(".jpeg"):
-        media = "image/jpeg"
-    elif filename.endswith(".gif"):
-        media = "image/gif"
-    elif filename.endswith(".webp"):
-        media = "image/webp"
+    ext_to_media = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+    }
+    suffix = Path(filename).suffix.lower()
+    media = ext_to_media.get(suffix, "image/png")
     return FileResponse(fpath, media_type=media)
 
 
