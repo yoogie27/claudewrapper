@@ -500,20 +500,36 @@ class Database:
             """)
             return result.rowcount
 
-    def requeue_stale_runs(self, older_than_iso: str) -> list[str]:
-        """Returns affected project IDs so caller can restart workers."""
+    def requeue_stale_runs(self, older_than_iso: str, exclude_run_ids: set[str] | None = None) -> list[str]:
+        """Returns affected project IDs so caller can restart workers.
+        Skips runs in exclude_run_ids (e.g. runs with live processes)."""
         with self.tx() as conn:
-            affected = conn.execute(
-                """SELECT DISTINCT t.project_id FROM runs r
-                   JOIN tasks t ON r.task_id = t.id
-                   WHERE r.status='running' AND r.started_at < ?""",
-                (older_than_iso,),
-            ).fetchall()
-            project_ids = [row[0] for row in affected]
-            conn.execute(
-                "UPDATE runs SET status='pending' WHERE status='running' AND started_at < ?",
-                (older_than_iso,),
-            )
+            if exclude_run_ids:
+                ph = ",".join("?" * len(exclude_run_ids))
+                exclude_list = list(exclude_run_ids)
+                affected = conn.execute(
+                    f"""SELECT DISTINCT t.project_id FROM runs r
+                       JOIN tasks t ON r.task_id = t.id
+                       WHERE r.status='running' AND r.started_at < ? AND r.id NOT IN ({ph})""",
+                    [older_than_iso] + exclude_list,
+                ).fetchall()
+                project_ids = [row[0] for row in affected]
+                conn.execute(
+                    f"UPDATE runs SET status='pending' WHERE status='running' AND started_at < ? AND id NOT IN ({ph})",
+                    [older_than_iso] + exclude_list,
+                )
+            else:
+                affected = conn.execute(
+                    """SELECT DISTINCT t.project_id FROM runs r
+                       JOIN tasks t ON r.task_id = t.id
+                       WHERE r.status='running' AND r.started_at < ?""",
+                    (older_than_iso,),
+                ).fetchall()
+                project_ids = [row[0] for row in affected]
+                conn.execute(
+                    "UPDATE runs SET status='pending' WHERE status='running' AND started_at < ?",
+                    (older_than_iso,),
+                )
             return project_ids
 
     # ── Usage / Aggregation ──
