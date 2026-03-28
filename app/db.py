@@ -446,6 +446,22 @@ class Database:
             )
         self._conn.commit()
 
+    def fail_orphaned_runs(self) -> int:
+        """Mark all 'running' runs as failed (used on startup for crash recovery)."""
+        now = utc_now()
+        with self.tx() as conn:
+            result = conn.execute(
+                "UPDATE runs SET status='failed', ended_at=?, exit_code=-1 WHERE status='running'",
+                (now,),
+            )
+            # Also reset tasks that were in_progress with no remaining pending runs
+            conn.execute("""
+                UPDATE tasks SET status='failed'
+                WHERE status='in_progress'
+                  AND id NOT IN (SELECT task_id FROM runs WHERE status IN ('pending', 'running'))
+            """)
+            return result.rowcount
+
     def requeue_stale_runs(self, older_than_iso: str) -> int:
         with self.tx() as conn:
             result = conn.execute(
