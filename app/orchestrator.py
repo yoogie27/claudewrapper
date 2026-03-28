@@ -53,27 +53,19 @@ class Orchestrator:
         log_path = str(settings.data_path() / "logs" / "app.log")
         self.logger = setup_logger(log_path)
         self.stop_event = asyncio.Event()
-        # run_id -> {"proc": Popen}
         self._proc_holders: dict[str, dict] = {}
-        # project_id -> asyncio.Task (one worker per active project)
         self._project_workers: dict[str, asyncio.Task] = {}
 
     def _get_backend(self, backend_name: str) -> CliBackend:
         """Create a CLI backend for a given task's backend preference."""
-        # Check for per-backend custom command in config
         custom_cmd = self.db.get_config(f"backend_cmd:{backend_name}", "") or ""
-
         if backend_name == "claude":
             backend = create_backend(
-                "claude",
-                command_template=custom_cmd or self.settings.claude_command_template,
-                prompt_via=self.settings.claude_prompt_via,
-                prompt_arg=self.settings.claude_prompt_arg,
+                "claude", command_template=custom_cmd or self.settings.claude_command_template,
+                prompt_via=self.settings.claude_prompt_via, prompt_arg=self.settings.claude_prompt_arg,
             )
         else:
             backend = create_backend(backend_name, command_template=custom_cmd)
-
-        # Apply model selection from settings
         backend.model = self.db.get_config(f"{backend_name}_model", "") or self.db.get_config("claude_model", "") or ""
         backend.fallback_model = self.db.get_config(f"{backend_name}_fallback_model", "") or self.db.get_config("claude_fallback_model", "") or ""
         return backend
@@ -208,9 +200,6 @@ class Orchestrator:
         prompt = self._build_prompt(task, project, messages)
         self.db.update_run(run_id, prompt=prompt)
 
-        # Determine if we should resume a prior Claude session
-        resume_session_id = task.get("claude_session_id")
-
         # Select CLI backend for this task
         backend_name = task.get("cli_backend") or "claude"
         try:
@@ -219,7 +208,8 @@ class Orchestrator:
             self.logger.warning("[%s] Unknown backend %r, falling back to claude", identifier, backend_name)
             backend = self._get_backend("claude")
 
-        # Run CLI
+        resume_session_id = task.get("claude_session_id")
+
         if self.settings.test_mode:
             self.logger.info("[%s] TEST MODE — skipping %s", identifier, backend.display_name)
             (session_dir / "stdout.txt").write_text(
@@ -255,7 +245,6 @@ class Orchestrator:
         finally:
             self._proc_holders.pop(run_id, None)
 
-        # Use normalized result
         exit_code = run_result.returncode
         self.logger.info("[%s] %s exited with code %d", identifier, backend.display_name, exit_code)
 
@@ -626,14 +615,13 @@ class Orchestrator:
                                 remove_worktree(Path(meta["repo"]), Path(meta["worktree"]))
                             except Exception:
                                 pass
-                        # Only delete this run's session dir, not the entire identifier dir
                         try:
                             shutil.rmtree(str(session_path), ignore_errors=True)
                         except Exception:
                             pass
                         identifier_dir = self.settings.data_path() / "sessions" / entry["identifier"]
                         try:
-                            identifier_dir.rmdir()  # only succeeds if empty
+                            identifier_dir.rmdir()
                         except OSError:
                             pass
                 if entries:
@@ -652,7 +640,6 @@ class Orchestrator:
         identifier = task["identifier"]
         removed = []
 
-        # Remove worktree via git to avoid stale .git/worktrees entries
         if task.get("worktree_path"):
             wt_path = Path(task["worktree_path"])
             if wt_path.exists():

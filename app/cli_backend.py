@@ -1,13 +1,8 @@
 """Pluggable CLI backend abstraction.
 
 Each backend wraps a coding-agent CLI tool (Claude Code, Gemini CLI, Codex CLI)
-and knows how to:
-  - Format a command from a prompt + workdir
-  - Run the subprocess with real-time stdout streaming to disk
-  - Parse the output into a normalized result (summary, cost, tokens, model)
-  - Extract session IDs for resume support (if the CLI supports it)
-
-The orchestrator selects a backend per task/run and delegates execution to it.
+and knows how to format commands, run subprocesses, and parse output into a
+normalized result. The orchestrator selects a backend per task.
 """
 from __future__ import annotations
 
@@ -18,7 +13,7 @@ import shlex
 import subprocess
 import sys
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -39,8 +34,6 @@ class RunResult:
 
 class CliBackend(ABC):
     """Base class for CLI coding-agent backends."""
-
-    # Each subclass sets these
     name: str = ""
     display_name: str = ""
 
@@ -49,49 +42,34 @@ class CliBackend(ABC):
         self.fallback_model: str = ""
 
     @abstractmethod
-    def format_command(
-        self,
-        prompt_path: Path,
-        workdir: Path | None,
-        prompt_text: str,
-        resume_session_id: str | None = None,
-    ) -> list[str]:
-        """Build the CLI command to execute."""
-        ...
+    def format_command(self, prompt_path: Path, workdir: Path | None,
+                       prompt_text: str, resume_session_id: str | None = None) -> list[str]: ...
 
     @abstractmethod
-    def parse_result(self, stdout: str) -> RunResult:
-        """Parse raw stdout into a normalized RunResult."""
-        ...
+    def parse_result(self, stdout: str) -> RunResult: ...
 
     def prepare_workdir(self, workdir: Path) -> None:
         """Optional hook to set up workdir before run (e.g. MCP config)."""
         pass
 
-    def run(
-        self,
-        identifier: str,
-        prompt_text: str,
-        session_dir: Path,
-        workdir: Path | None,
-        proc_holder: dict | None = None,
-        resume_session_id: str | None = None,
-        extra_env: dict[str, str] | None = None,
-    ) -> RunResult:
-        """Run the CLI backend. Streams stdout to disk in real time."""
+    @property
+    def _uses_stdin(self) -> bool:
+        return False
+
+    def run(self, identifier: str, prompt_text: str, session_dir: Path,
+            workdir: Path | None, proc_holder: dict | None = None,
+            resume_session_id: str | None = None,
+            extra_env: dict[str, str] | None = None) -> RunResult:
         session_dir.mkdir(parents=True, exist_ok=True)
         prompt_path = session_dir / "prompt.txt"
         prompt_path.write_text(prompt_text, encoding="utf-8")
-
         stdout_path = session_dir / "stdout.txt"
         stderr_path = session_dir / "stderr.txt"
 
-        # Let backend prepare workdir (e.g. inject MCP config)
         if workdir:
             self.prepare_workdir(workdir)
 
         cmd = self.format_command(prompt_path, workdir, prompt_text, resume_session_id)
-
         cflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         proc_env = {**os.environ, **(extra_env or {})} if extra_env else None
 
@@ -106,7 +84,6 @@ class CliBackend(ABC):
             )
             if proc_holder is not None:
                 proc_holder["proc"] = proc
-
             if self._uses_stdin:
                 proc.stdin.write(prompt_text)
                 proc.stdin.close()
@@ -127,20 +104,12 @@ class CliBackend(ABC):
 
         stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
         stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
-
         result = self.parse_result(stdout)
         result.returncode = proc.returncode
-        result.stderr = stderr
         result.stdout = stdout
+        result.stderr = stderr
         return result
 
-    @property
-    def _uses_stdin(self) -> bool:
-        """Override to True if the CLI reads the prompt from stdin."""
-        return False
-
-
-# ── Safe substitution helper ──
 
 class _SafeSubs(dict):
     def __missing__(self, key: str) -> str:
@@ -155,12 +124,8 @@ class ClaudeBackend(CliBackend):
     name = "claude"
     display_name = "Claude Code"
 
-    def __init__(
-        self,
-        command_template: str = "claude -p --prompt-file {prompt_path} --dangerously-skip-permissions --output-format stream-json",
-        prompt_via: str = "prompt_file",
-        prompt_arg: str = "--prompt",
-    ) -> None:
+    def __init__(self, command_template: str = "claude -p --prompt-file {prompt_path} --dangerously-skip-permissions --output-format stream-json",
+                 prompt_via: str = "prompt_file", prompt_arg: str = "--prompt") -> None:
         super().__init__()
         self.command_template = command_template
         self.prompt_via = prompt_via
@@ -171,43 +136,26 @@ class ClaudeBackend(CliBackend):
     def _uses_stdin(self) -> bool:
         return self.prompt_via == "stdin"
 
-    def format_command(
-        self,
-        prompt_path: Path,
-        workdir: Path | None,
-        prompt_text: str,
-        resume_session_id: str | None = None,
-    ) -> list[str]:
-        subs = {
-            "prompt_path": str(prompt_path),
-            "prompt_text": prompt_text.replace('"', '\\"'),
-            "workdir": str(workdir) if workdir else "",
-            "session_id": resume_session_id or "",
-        }
+    def format_command(self, prompt_path: Path, workdir: Path | None,
+                       prompt_text: str, resume_session_id: str | None = None) -> list[str]:
+        subs = {"prompt_path": str(prompt_path), "prompt_text": prompt_text.replace('"', '\\"'),
+                "workdir": str(workdir) if workdir else "", "session_id": resume_session_id or ""}
         rendered = self.command_template.format_map(_SafeSubs(subs))
-
-        # Strip empty --resume/--session flags
         rendered = re.sub(r'--resume\s+""\s*', '', rendered)
         rendered = re.sub(r"--resume\s+''\s*", '', rendered)
         rendered = re.sub(r'--session\s+""\s*', '', rendered)
-
-        # Force stream-json for real-time streaming
         rendered = re.sub(r'--output-format\s+json\b', '--output-format stream-json', rendered)
         if 'stream-json' in rendered and '--verbose' not in rendered:
-            rendered = rendered + ' --verbose'
-
+            rendered += ' --verbose'
         cmd = shlex.split(rendered)
-
         if self.model and "--model" not in cmd:
             cmd.extend(["--model", self.model])
         if self.fallback_model and "--fallback-model" not in cmd:
             cmd.extend(["--fallback-model", self.fallback_model])
         if resume_session_id and "--resume" not in cmd:
             cmd.extend(["--resume", resume_session_id])
-
         if self.prompt_via == "arg":
             cmd.extend([self.prompt_arg, prompt_text])
-
         return cmd
 
     def prepare_workdir(self, workdir: Path) -> None:
@@ -218,11 +166,8 @@ class ClaudeBackend(CliBackend):
         text = (stdout or "").strip()
         if not text:
             return RunResult(returncode=-1, stdout="", stderr="", summary="No output captured.")
-
         result = RunResult(returncode=0, stdout=stdout, stderr="")
         lines = text.splitlines()
-
-        # Find result event (has cost/token data)
         for line in reversed(lines):
             line = line.strip()
             if not line:
@@ -235,12 +180,9 @@ class ClaudeBackend(CliBackend):
                     result.input_tokens = usage.get("input_tokens", 0) or 0
                     result.output_tokens = usage.get("output_tokens", 0) or 0
                     result.model = obj.get("model", "") or ""
-
                     raw = obj.get("result", "")
                     if isinstance(raw, list):
-                        summary = "".join(
-                            c.get("text", "") for c in raw if c.get("type") == "text"
-                        ).strip()
+                        summary = "".join(c.get("text", "") for c in raw if c.get("type") == "text").strip()
                     else:
                         summary = str(raw).strip()
                     if summary:
@@ -250,8 +192,6 @@ class ClaudeBackend(CliBackend):
                     break
             except (json.JSONDecodeError, ValueError):
                 continue
-
-        # Fallback: collect assistant text blocks
         assistant_text = []
         for line in lines:
             line = line.strip()
@@ -266,12 +206,10 @@ class ClaudeBackend(CliBackend):
                             assistant_text.append(block["text"])
             except (json.JSONDecodeError, ValueError):
                 continue
-
         if assistant_text:
             result.summary = "\n".join(assistant_text).strip()[:5000]
         else:
             result.summary = text[:5000]
-
         result.session_id = self._extract_session_id(stdout)
         return result
 
@@ -300,11 +238,9 @@ class ClaudeBackend(CliBackend):
         servers = self.mcp_config.get("mcpServers", {})
         if not servers:
             return
-
         config_path = Path.home() / ".claude.json"
         norm_path = str(workdir).replace("\\", "/")
         lock_path = config_path.with_suffix(".lock")
-
         try:
             lock_path.parent.mkdir(parents=True, exist_ok=True)
             with open(lock_path, "w") as lock_f:
@@ -313,21 +249,17 @@ class ClaudeBackend(CliBackend):
                     fcntl.flock(lock_f, fcntl.LOCK_EX)
                 except (ImportError, OSError):
                     pass
-
                 existing: dict = {}
                 if config_path.exists():
                     existing = json.loads(config_path.read_text(encoding="utf-8"))
-
                 projects = existing.setdefault("projects", {})
                 proj = projects.setdefault(norm_path, {})
                 mcp = proj.setdefault("mcpServers", {})
-
                 changed = False
                 for name, cfg in servers.items():
                     if name not in mcp:
                         mcp[name] = cfg
                         changed = True
-
                 if changed:
                     config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
         except Exception:
@@ -342,28 +274,15 @@ class GeminiBackend(CliBackend):
     name = "gemini"
     display_name = "Gemini CLI"
 
-    def __init__(
-        self,
-        command_template: str = "gemini -p {prompt_path}",
-    ) -> None:
+    def __init__(self, command_template: str = "gemini -p {prompt_path}") -> None:
         super().__init__()
         self.command_template = command_template
 
-    def format_command(
-        self,
-        prompt_path: Path,
-        workdir: Path | None,
-        prompt_text: str,
-        resume_session_id: str | None = None,
-    ) -> list[str]:
-        subs = {
-            "prompt_path": str(prompt_path),
-            "prompt_text": prompt_text.replace('"', '\\"'),
-            "workdir": str(workdir) if workdir else "",
-            "session_id": resume_session_id or "",
-        }
-        rendered = self.command_template.format_map(_SafeSubs(subs))
-        cmd = shlex.split(rendered)
+    def format_command(self, prompt_path: Path, workdir: Path | None,
+                       prompt_text: str, resume_session_id: str | None = None) -> list[str]:
+        subs = {"prompt_path": str(prompt_path), "prompt_text": prompt_text.replace('"', '\\"'),
+                "workdir": str(workdir) if workdir else "", "session_id": resume_session_id or ""}
+        cmd = shlex.split(self.command_template.format_map(_SafeSubs(subs)))
         if self.model and "--model" not in cmd:
             cmd.extend(["--model", self.model])
         return cmd
@@ -372,8 +291,6 @@ class GeminiBackend(CliBackend):
         text = (stdout or "").strip()
         if not text:
             return RunResult(returncode=-1, stdout="", stderr="", summary="No output captured.")
-        # Gemini CLI outputs plain text or JSON lines — extract summary
-        # Try JSON lines first (if Gemini adds structured output)
         for line in reversed(text.splitlines()):
             line = line.strip()
             if not line:
@@ -383,14 +300,10 @@ class GeminiBackend(CliBackend):
                 if isinstance(obj, dict):
                     summary = obj.get("result", "") or obj.get("text", "") or obj.get("response", "")
                     if summary:
-                        return RunResult(
-                            returncode=0, stdout=stdout, stderr="",
-                            summary=str(summary).strip()[:5000],
-                            model=obj.get("model", ""),
-                        )
+                        return RunResult(returncode=0, stdout=stdout, stderr="",
+                                         summary=str(summary).strip()[:5000], model=obj.get("model", ""))
             except (json.JSONDecodeError, ValueError):
                 continue
-        # Plain text output
         return RunResult(returncode=0, stdout=stdout, stderr="", summary=text[:5000])
 
 
@@ -402,28 +315,15 @@ class CodexBackend(CliBackend):
     name = "codex"
     display_name = "Codex CLI"
 
-    def __init__(
-        self,
-        command_template: str = "codex --approval-mode full-auto --quiet {prompt_path}",
-    ) -> None:
+    def __init__(self, command_template: str = "codex --approval-mode full-auto --quiet {prompt_path}") -> None:
         super().__init__()
         self.command_template = command_template
 
-    def format_command(
-        self,
-        prompt_path: Path,
-        workdir: Path | None,
-        prompt_text: str,
-        resume_session_id: str | None = None,
-    ) -> list[str]:
-        subs = {
-            "prompt_path": str(prompt_path),
-            "prompt_text": prompt_text.replace('"', '\\"'),
-            "workdir": str(workdir) if workdir else "",
-            "session_id": resume_session_id or "",
-        }
-        rendered = self.command_template.format_map(_SafeSubs(subs))
-        cmd = shlex.split(rendered)
+    def format_command(self, prompt_path: Path, workdir: Path | None,
+                       prompt_text: str, resume_session_id: str | None = None) -> list[str]:
+        subs = {"prompt_path": str(prompt_path), "prompt_text": prompt_text.replace('"', '\\"'),
+                "workdir": str(workdir) if workdir else "", "session_id": resume_session_id or ""}
+        cmd = shlex.split(self.command_template.format_map(_SafeSubs(subs)))
         if self.model and "--model" not in cmd:
             cmd.extend(["--model", self.model])
         return cmd
@@ -432,22 +332,16 @@ class CodexBackend(CliBackend):
         text = (stdout or "").strip()
         if not text:
             return RunResult(returncode=-1, stdout="", stderr="", summary="No output captured.")
-        # Codex outputs JSON lines with type markers
         for line in reversed(text.splitlines()):
             line = line.strip()
             if not line:
                 continue
             try:
                 obj = json.loads(line)
-                if isinstance(obj, dict):
-                    # Codex result format
-                    if obj.get("type") == "result" or "result" in obj:
-                        summary = obj.get("result", "") or obj.get("text", "")
-                        return RunResult(
-                            returncode=0, stdout=stdout, stderr="",
-                            summary=str(summary).strip()[:5000],
-                            model=obj.get("model", ""),
-                        )
+                if isinstance(obj, dict) and ("type" in obj or "result" in obj):
+                    summary = obj.get("result", "") or obj.get("text", "")
+                    return RunResult(returncode=0, stdout=stdout, stderr="",
+                                     summary=str(summary).strip()[:5000], model=obj.get("model", ""))
             except (json.JSONDecodeError, ValueError):
                 continue
         return RunResult(returncode=0, stdout=stdout, stderr="", summary=text[:5000])
@@ -457,14 +351,10 @@ class CodexBackend(CliBackend):
 # Registry
 # ═══════════════════════════════════════════════════════════════════
 
-# All available backends, keyed by name
 BACKENDS: dict[str, type[CliBackend]] = {
-    "claude": ClaudeBackend,
-    "gemini": GeminiBackend,
-    "codex": CodexBackend,
+    "claude": ClaudeBackend, "gemini": GeminiBackend, "codex": CodexBackend,
 }
 
-# For UI display
 BACKEND_CHOICES = [
     {"value": "claude", "label": "Claude Code", "default_cmd": "claude -p --prompt-file {prompt_path} --dangerously-skip-permissions --output-format stream-json"},
     {"value": "gemini", "label": "Gemini CLI", "default_cmd": "gemini -p {prompt_path}"},
@@ -473,23 +363,14 @@ BACKEND_CHOICES = [
 
 
 def create_backend(name: str, command_template: str = "", **kwargs: Any) -> CliBackend:
-    """Factory: create a backend instance by name.
-
-    If command_template is empty, uses the backend's default.
-    Extra kwargs are passed to the backend constructor.
-    """
     cls = BACKENDS.get(name)
     if not cls:
         raise ValueError(f"Unknown backend: {name!r}. Available: {list(BACKENDS)}")
-
     init_kwargs: dict[str, Any] = {}
     if command_template:
         init_kwargs["command_template"] = command_template
-
-    # ClaudeBackend accepts extra params
     if name == "claude":
         for k in ("prompt_via", "prompt_arg"):
             if k in kwargs:
                 init_kwargs[k] = kwargs[k]
-
     return cls(**init_kwargs)

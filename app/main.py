@@ -262,12 +262,10 @@ async def create_task(project_id: str, request: Request) -> Any:
         mode = detect_mode(title + " " + description)
     priority = data.get("priority", "medium").strip()
     cli_backend = data.get("cli_backend", "claude").strip() or "claude"
-    # Validate backend name
     valid_backends = {b["value"] for b in BACKEND_CHOICES}
     if cli_backend not in valid_backends:
         cli_backend = "claude"
 
-    # Generate identifier
     num = db.next_task_number(project_id)
     identifier = f"{project['slug']}-{num:03d}"
     branch_name = f"ticket/{identifier}"
@@ -384,7 +382,6 @@ async def serve_upload(task_id: str, filename: str) -> Any:
 
 @app.get("/api/tasks/{task_id}/messages")
 async def list_messages(task_id: str, request: Request) -> Any:
-    """Supports ?limit=N&before=<iso> for paginated access to long histories."""
     limit = int(request.query_params.get("limit", "0"))
     before = request.query_params.get("before", "")
     return db.list_messages(task_id, limit=limit, before=before)
@@ -693,7 +690,7 @@ async def diagnose_repo(project_id: str) -> Any:
                 checks.append({"name": "Remote 'origin' configured", "ok": False, "detail": str(e)})
                 remote_url = ""
 
-            # 4. GitHub remote parsed (subprocess — must not block event loop)
+            # 4. GitHub remote parsed
             gh = await asyncio.to_thread(parse_github_remote, repo)
             if gh:
                 checks.append({"name": "GitHub remote detected", "ok": True, "detail": f"{gh[0]}/{gh[1]}"})
@@ -967,24 +964,19 @@ async def delete_prompt(prompt_id: str) -> Any:
     return {"ok": True}
 
 
-# ── CLI Backend API ──
+# ── Mode Detection API ──
 
 @app.get("/api/backends")
 async def list_backends() -> Any:
-    """List available CLI backends with their config."""
     result = []
     for b in BACKEND_CHOICES:
         custom_cmd = db.get_config(f"backend_cmd:{b['value']}", "") or ""
-        result.append({
-            **b,
-            "custom_cmd": custom_cmd,
-        })
+        result.append({**b, "custom_cmd": custom_cmd})
     return result
 
 
 @app.put("/api/backends/{backend_name}/config")
 async def update_backend_config(backend_name: str, request: Request) -> Any:
-    """Set custom command template for a backend. Send empty to reset to default."""
     valid = {b["value"] for b in BACKEND_CHOICES}
     if backend_name not in valid:
         return JSONResponse({"error": f"Unknown backend: {backend_name}"}, 400)
@@ -996,8 +988,6 @@ async def update_backend_config(backend_name: str, request: Request) -> Any:
         db.delete_config(f"backend_cmd:{backend_name}")
     return {"ok": True}
 
-
-# ── Mode Detection API ──
 
 @app.post("/api/detect-mode")
 async def detect_mode_api(request: Request) -> Any:

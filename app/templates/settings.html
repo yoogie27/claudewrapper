@@ -27,7 +27,7 @@
     <div class="settings-section">
         <h3>CLI Backends</h3>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
-            Configure the CLI tools used to run tasks. Each task can use a different backend — choose when creating a task.
+            Configure the CLI tools used to run tasks. Each task can use a different backend.
             Leave the command template empty to use the default.
         </p>
         <div id="backends-container" style="display:flex;flex-direction:column;gap:12px">
@@ -396,25 +396,21 @@ async function loadBackends() {
         `).join('');
     } catch {}
 }
-
 async function saveBackendCmd(name) {
     const cmd = document.getElementById('backend-cmd-' + name).value.trim();
     try {
         const resp = await fetch('/api/backends/' + name + '/config', {
-            method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
+            method: 'PUT', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ command_template: cmd }),
         });
         if (resp.ok) toast('Saved', name + ' command updated', 'success');
     } catch { toast('Error', 'Failed to save', 'error'); }
 }
-
 async function resetBackendCmd(name) {
     document.getElementById('backend-cmd-' + name).value = '';
     await saveBackendCmd(name);
     toast('Reset', name + ' command reset to default', 'info');
 }
-
 document.addEventListener('DOMContentLoaded', loadBackends);
 
 // ── Mode Prompts ──

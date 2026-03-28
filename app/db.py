@@ -246,8 +246,7 @@ class Database:
     # ── Tasks ──
 
     def next_task_number(self, project_id: str) -> int:
-        """Monotonic counter per project — survives task deletions.
-        Atomic via BEGIN IMMEDIATE to prevent duplicate identifiers."""
+        """Monotonic counter per project. Atomic via BEGIN IMMEDIATE."""
         counter_key = f"task_counter:{project_id}"
         with self.tx() as conn:
             row = conn.execute("SELECT value FROM config WHERE key = ?", (counter_key,)).fetchone()
@@ -326,7 +325,6 @@ class Database:
                 "run_id": run_id, "metadata": metadata or {}, "created_at": now}
 
     def list_messages(self, task_id: str, limit: int = 0, before: str = "") -> list[dict]:
-        """List messages. With limit>0, returns most recent N (or N before `before` cursor)."""
         if limit > 0:
             if before:
                 rows = self._conn.execute(
@@ -448,30 +446,34 @@ class Database:
         return [dict(r) for r in rows]
 
     def list_queue(self) -> list[dict]:
-        """List active queue entries (one per task, not per run) across all projects."""
+        """List active queue entries (one per task) with deterministic run selection."""
         rows = self._conn.execute(
-            """SELECT r.id as run_id, r.status as run_status,
-                      MIN(r.queue_position) as queue_position,
-                      MIN(r.created_at) as run_created_at,
+            """SELECT repr.id as run_id, repr.status as run_status,
+                      repr.queue_position, repr.created_at as run_created_at,
                       t.id as task_id, t.title as task_title, t.identifier, t.mode,
                       p.id as project_id, p.name as project_name, p.slug as project_slug,
-                      MAX(CASE WHEN r.status = 'running' THEN 1 ELSE 0 END) as is_running,
-                      COUNT(r.id) as run_count
-               FROM runs r
-               JOIN tasks t ON r.task_id = t.id
+                      CASE WHEN repr.status = 'running' THEN 1 ELSE 0 END as is_running,
+                      agg.run_count
+               FROM (
+                   SELECT task_id, COUNT(*) as run_count
+                   FROM runs WHERE status IN ('running', 'pending')
+                   GROUP BY task_id
+               ) agg
+               JOIN (
+                   SELECT * FROM runs r1
+                   WHERE r1.status IN ('running', 'pending')
+                     AND r1.id = (
+                         SELECT r2.id FROM runs r2
+                         WHERE r2.task_id = r1.task_id AND r2.status IN ('running', 'pending')
+                         ORDER BY (r2.status = 'running') DESC, r2.queue_position ASC, r2.created_at ASC
+                         LIMIT 1
+                     )
+               ) repr ON repr.task_id = agg.task_id
+               JOIN tasks t ON t.id = agg.task_id
                JOIN projects p ON t.project_id = p.id
-               WHERE r.status IN ('running', 'pending')
-               GROUP BY t.id
-               ORDER BY is_running DESC,
-                        MIN(r.queue_position) ASC, MIN(r.created_at) ASC"""
+               ORDER BY is_running DESC, repr.queue_position ASC, repr.created_at ASC"""
         ).fetchall()
-        result = []
-        for r in rows:
-            d = dict(r)
-            # Normalize run_status from the grouped result
-            d["run_status"] = "running" if d["is_running"] else "pending"
-            result.append(d)
-        return result
+        return [dict(r) for r in rows]
 
     def reorder_queue(self, run_ids: list[str]) -> None:
         """Set queue_position based on the ordered list of run IDs."""
@@ -499,7 +501,7 @@ class Database:
             return result.rowcount
 
     def requeue_stale_runs(self, older_than_iso: str) -> list[str]:
-        """Requeue stale runs. Returns affected project IDs so caller can restart workers."""
+        """Returns affected project IDs so caller can restart workers."""
         with self.tx() as conn:
             affected = conn.execute(
                 """SELECT DISTINCT t.project_id FROM runs r
