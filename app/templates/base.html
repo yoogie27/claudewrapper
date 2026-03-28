@@ -65,6 +65,41 @@
             setTimeout(() => { el.classList.add('toast-exit'); setTimeout(() => el.remove(), 300); }, 4000);
         };
 
+        // ── Notification sound (Web Audio API — no external files needed) ──
+        window._notifCtx = null;
+        window.playNotificationSound = function() {
+            try {
+                if (!window._notifCtx) window._notifCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const ctx = window._notifCtx;
+                const now = ctx.currentTime;
+                const gain = ctx.createGain();
+                gain.connect(ctx.destination);
+                gain.gain.setValueAtTime(0.3, now);
+                gain.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
+                // Two-tone ding: E5 then G5
+                [659.25, 783.99].forEach((freq, i) => {
+                    const osc = ctx.createOscillator();
+                    osc.type = 'sine';
+                    osc.frequency.value = freq;
+                    osc.connect(gain);
+                    osc.start(now + i * 0.15);
+                    osc.stop(now + i * 0.15 + 0.3);
+                });
+            } catch {}
+        };
+
+        // ── Browser notifications (asks permission on first use) ──
+        window.sendBrowserNotification = function(title, body) {
+            if (!('Notification' in window)) return;
+            if (Notification.permission === 'granted') {
+                new Notification(title, { body, icon: '/static/favicon.ico' });
+            } else if (Notification.permission !== 'denied') {
+                Notification.requestPermission().then(p => {
+                    if (p === 'granted') new Notification(title, { body, icon: '/static/favicon.ico' });
+                });
+            }
+        };
+
         // Markdown renderer setup
         if (window.marked) {
             marked.setOptions({ breaks: true, gfm: true });

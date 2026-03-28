@@ -712,6 +712,11 @@ async function sendMessage() {
     let content = input.value.trim();
     if (!content && !_pendingImages.length) return;
 
+    // Request browser notification permission on first interaction
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+
     // Append image markdown if any
     if (_pendingImages.length) {
         const imgMd = _pendingImages.map(img => `![${img.filename}](${img.url})`).join('\n');
@@ -928,6 +933,13 @@ function connectStream() {
                 }
             });
         });
+        // Refresh project list to check if all jobs are now done
+        fetch('/api/projects').then(r => r.ok ? r.json() : null).then(ps => {
+            if (!ps) return;
+            state.projects = ps;
+            renderProjects();
+            checkAllJobsDone();
+        }).catch(() => {});
     });
 
     source.onerror = () => {
@@ -1604,6 +1616,21 @@ function setupQueueDrag() {
     });
 }
 
+// ── All-jobs-done notification ──
+let _hadActiveRuns = false;
+
+function checkAllJobsDone() {
+    const hasActive = state.projects.some(p => p.has_active_run);
+    if (_hadActiveRuns && !hasActive) {
+        playNotificationSound();
+        toast('All done', 'All jobs have finished', 'success');
+        if (document.hidden) {
+            sendBrowserNotification('ClaudeWrapper', 'All jobs have finished');
+        }
+    }
+    _hadActiveRuns = hasActive;
+}
+
 // ── Auto-refresh (always polls, even during streaming) ──
 let _lastProjectsHash = '';
 let _lastTasksHash = '';
@@ -1620,6 +1647,7 @@ setInterval(async () => {
         _lastProjectsHash = hash;
         state.projects = newProjects;
         renderProjects();
+        checkAllJobsDone();
     } catch {}
     loadQueue();
 }, 5000);
@@ -1671,6 +1699,8 @@ setInterval(async () => {
 document.addEventListener('DOMContentLoaded', async () => {
     renderProjects();
     loadQueue();
+    // Initialize active-run tracking so first poll doesn't false-fire the notification
+    _hadActiveRuns = state.projects.some(p => p.has_active_run);
 
     // Restore last selected project and task from localStorage
     const savedProject = localStorage.getItem('cw-project');
