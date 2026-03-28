@@ -460,7 +460,7 @@ async def stream_task(task_id: str) -> Any:
         pos = 0
         line_buffer = ""
         idle = 0
-        stale_ticks = 0  # ticks with no new output for a "running" run
+        stale_ticks = 0  # ticks with no new output
 
         while True:
             # Find the current active run for this task (running > oldest pending)
@@ -527,15 +527,30 @@ async def stream_task(task_id: str) -> Any:
                 await asyncio.sleep(1)
                 continue
 
-            # Detect stale "running" runs with no live process
-            if active["status"] == "running" and not had_output:
+            # Detect stale runs with no output
+            if not had_output:
                 stale_ticks += 1
-                # After ~15s of no output, check if process is actually alive
-                if stale_ticks >= 30 and not orchestrator.is_run_alive(current_run_id):
+                alive = orchestrator.is_run_alive(current_run_id)
+                if active["status"] == "running" and stale_ticks >= 30 and not alive:
+                    # Process exited but run wasn't cleaned up — mark failed
                     db.update_run(current_run_id, status="failed", ended_at=utc_now(), exit_code=-1)
                     task = db.get_task(task_id)
                     if task and not db.has_pending_runs(task_id):
                         db.update_task(task_id, status="failed")
+                    current_run_id = None
+                    pos = 0
+                    line_buffer = ""
+                    stale_ticks = 0
+                    await asyncio.sleep(0.5)
+                    continue
+                elif active["status"] == "pending" and stale_ticks >= 120:
+                    # Pending run not picked up after ~60s — disconnect and let
+                    # auto-refresh reconnect once the worker processes it
+                    yield "event: done\ndata: {}\n\n"
+                    return
+                elif active["status"] == "running" and stale_ticks >= 600 and alive:
+                    # Process alive but no output for ~5min — likely hanging
+                    orchestrator.cancel_run(current_run_id)
                     current_run_id = None
                     pos = 0
                     line_buffer = ""

@@ -124,7 +124,17 @@ class Orchestrator:
                 continue
 
             idle_cycles = 0
-            await self._execute_run(run)
+            try:
+                await self._execute_run(run)
+            except Exception as exc:
+                self.logger.error("Worker error for run %s: %s", run["id"], exc)
+                try:
+                    self.db.update_run(run["id"], status="failed", ended_at=utc_now(), exit_code=-1)
+                    task = self.db.get_task(run["task_id"])
+                    if task and not self.db.has_pending_runs(run["task_id"]):
+                        self.db.update_task(run["task_id"], status="failed")
+                except Exception:
+                    pass
 
     async def _execute_run(self, run: dict) -> None:
         run_id = run["id"]
