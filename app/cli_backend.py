@@ -295,7 +295,7 @@ class GeminiBackend(CliBackend):
     name = "gemini"
     display_name = "Gemini CLI"
 
-    def __init__(self, command_template: str = "gemini -p {prompt_path}") -> None:
+    def __init__(self, command_template: str = "gemini -y -p {prompt_path}") -> None:
         super().__init__()
         self.command_template = command_template
 
@@ -378,7 +378,7 @@ BACKENDS: dict[str, type[CliBackend]] = {
 
 BACKEND_CHOICES = [
     {"value": "claude", "label": "Claude Code", "default_cmd": "claude -p --prompt-file {prompt_path} --dangerously-skip-permissions --output-format stream-json"},
-    {"value": "gemini", "label": "Gemini CLI", "default_cmd": "gemini -p {prompt_path}"},
+    {"value": "gemini", "label": "Gemini CLI", "default_cmd": "gemini -y -p {prompt_path}"},
     {"value": "codex", "label": "Codex CLI", "default_cmd": "codex --approval-mode full-auto --quiet {prompt_path}"},
 ]
 

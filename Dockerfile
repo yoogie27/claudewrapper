@@ -34,6 +34,9 @@ RUN pip install --no-cache-dir -e . scipy psutil pytest
 RUN useradd -m -u 1000 claude \
     && chown -R claude:claude $(npm root -g) $(dirname $(which npm)) 2>/dev/null || true
 
+# Ensure ~/.local/bin is in PATH (Claude Code install script installs there)
+ENV PATH="/home/claude/.local/bin:${PATH}"
+
 # Git config (needed for commits inside the container)
 RUN git config --global user.name "ClaudeWrapper" \
     && git config --global user.email "claudewrapper@docker"
