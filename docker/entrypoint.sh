@@ -52,9 +52,9 @@ echo "==> Python:      $(python --version)"
 echo ""
 
 # ── Start Application as non-root user ────────────────────
-# Ensure /data is writable by claude user
-mkdir -p /data
-chown -R claude:claude /data 2>/dev/null || true
+# Ensure /data and claude home are writable by claude user
+mkdir -p /data /home/claude/.claude
+chown -R claude:claude /data /home/claude 2>/dev/null || true
 
 # Switch to non-root user and run the application
 exec su -s /bin/sh claude -c "$*"

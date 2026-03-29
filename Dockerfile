@@ -21,8 +21,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet \
     && ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 
-# Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
+# CLI backends
+RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli @openai/codex
 
 # Application
 WORKDIR /app

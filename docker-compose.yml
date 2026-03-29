@@ -7,7 +7,7 @@ services:
     volumes:
       - /opt/claudewrapper/data:/data
       - /opt/claudewrapper/ssh-keys:/data/ssh
-      - /opt/claudewrapper/config/.claude:/root/.claude
+      - /opt/claudewrapper/config/.claude:/home/claude/.claude
     environment:
       - GITHUB_TOKEN
       - WEB_HOST=0.0.0.0

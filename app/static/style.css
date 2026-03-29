@@ -429,6 +429,7 @@ html.dark .project-item.active { background: #2a1520; }
     align-items: center;
     gap: 8px;
     margin-top: 8px;
+    flex-wrap: wrap;
 }
 .quick-task-meta select {
     padding: 4px 8px;
