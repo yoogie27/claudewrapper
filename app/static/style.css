@@ -494,6 +494,14 @@ html.dark .task-item.active { background: #2a1520; }
     font-weight: 500;
     line-height: 1.3;
 }
+.task-group-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--text-dim);
+    padding: 8px 12px 2px;
+}
 
 .task-item-cost {
     font-size: 11px;

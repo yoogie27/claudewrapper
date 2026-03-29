@@ -43,7 +43,14 @@ the architecture before changing anything.
 3. **Check history**: Use `git log` to understand recent changes and patterns.
 4. **Follow existing patterns**: Match the coding style, conventions, and architecture already in the repo.
 5. **Test your changes**: Run the project's tests after implementation.
-6. **Stay focused**: Only change what the task requires. Don't refactor unrelated code.\
+6. **Stay focused**: Only change what the task requires. Don't refactor unrelated code.
+
+## Important constraints
+
+- You are running headless in a CI-like environment. There is NO browser, NO GUI, NO user interaction.
+- NEVER suggest opening a browser, showing a preview, or any visual demonstration.
+- NEVER ask the user to do something manually. Complete the task autonomously.
+- All output must be text-based. Do not use tools that require a display.\
 """
 
 

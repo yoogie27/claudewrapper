@@ -399,26 +399,55 @@ function renderTasks() {
         oldPositions[node.dataset.id] = node.getBoundingClientRect();
     });
 
-    // Render new list
-    el.innerHTML = tasks.map(t => {
-        const unread = _getUnread(t);
-        const unreadBadge = unread > 0 && state.currentTask?.id !== t.id
-            ? `<span class="task-unread">${unread}</span>` : '';
-        return `
-        <div class="task-item ${state.currentTask?.id === t.id ? 'active' : ''} task-status-${t.status}"
-             data-id="${t.id}"
-             onclick="selectTask('${t.id}')"
-             oncontextmenu="event.preventDefault();showCtx(event, 'task', '${t.id}', '${escAttr(t.title)}')">
-            <div class="task-item-header">
-                <span class="mode-dot" style="background:${state.modeColors[t.mode] || '#e11d48'}"></span>
-                <span class="task-item-id">${esc(t.identifier)}</span>
-                <span class="badge badge-${t.status}">${t.status.replace('_', ' ')}</span>
-                ${t.cli_backend && t.cli_backend !== 'claude' ? `<span class="backend-tag">${esc(t.cli_backend)}</span>` : ''}
-                ${unreadBadge}
+    // Group tasks by last activity
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterdayStart = new Date(todayStart - 86400000);
+    const hourAgo = new Date(now - 3600000);
+
+    const groups = { hour: [], today: [], yesterday: [], older: [] };
+    tasks.forEach(t => {
+        const ts = new Date(t.last_message_at || t.updated_at || t.created_at);
+        if (ts >= hourAgo) groups.hour.push(t);
+        else if (ts >= todayStart) groups.today.push(t);
+        else if (ts >= yesterdayStart) groups.yesterday.push(t);
+        else groups.older.push(t);
+    });
+
+    const groupLabels = { hour: 'Last Hour', today: 'Today', yesterday: 'Yesterday', older: 'Older' };
+    let html = '';
+    for (const [key, items] of Object.entries(groups)) {
+        if (!items.length) continue;
+        html += `<div class="task-group-label">${groupLabels[key]}</div>`;
+        html += items.map(t => {
+            const unread = _getUnread(t);
+            const unreadBadge = unread > 0 && state.currentTask?.id !== t.id
+                ? `<span class="task-unread">${unread}</span>` : '';
+            // Status icon: PR badge for tasks with PR, bell for tasks needing attention
+            let statusIcon = '';
+            if (t.pr_url) {
+                statusIcon = '<span title="PR created" style="font-size:12px;margin-left:auto">&#9741;</span>';
+            } else if (t.status === 'done' || t.status === 'failed' || t.status === 'in_review') {
+                statusIcon = '<span title="Needs attention" style="font-size:12px;margin-left:auto">&#128276;</span>';
+            }
+            return `
+            <div class="task-item ${state.currentTask?.id === t.id ? 'active' : ''} task-status-${t.status}"
+                 data-id="${t.id}"
+                 onclick="selectTask('${t.id}')"
+                 oncontextmenu="event.preventDefault();showCtx(event, 'task', '${t.id}', '${escAttr(t.title)}')">
+                <div class="task-item-header">
+                    <span class="mode-dot" style="background:${state.modeColors[t.mode] || '#e11d48'}"></span>
+                    <span class="task-item-id">${esc(t.identifier)}</span>
+                    <span class="badge badge-${t.status}">${t.status.replace('_', ' ')}</span>
+                    ${t.cli_backend && t.cli_backend !== 'claude' ? `<span class="backend-tag">${esc(t.cli_backend)}</span>` : ''}
+                    ${statusIcon}
+                    ${unreadBadge}
+                </div>
+                <div class="task-item-title">${esc(t.title)}</div>
             </div>
-            <div class="task-item-title">${esc(t.title)}</div>
-        </div>
-    `}).join('');
+        `}).join('');
+    }
+    el.innerHTML = html;
 
     // FLIP animation: animate from old to new positions
     el.querySelectorAll('.task-item[data-id]').forEach(node => {
