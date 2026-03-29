@@ -870,11 +870,11 @@ function connectStream() {
     // Guard: ignore events from stale EventSources after task switch
     function isStale() { return state.streamSource !== source; }
 
-    // Watchdog: if no SSE events for 30s, verify the run is still alive
+    // Watchdog: if no SSE events for 10s, verify the run is still alive
     let _lastEventTime = Date.now();
     const _watchdog = setInterval(async () => {
         if (isStale()) { clearInterval(_watchdog); return; }
-        if (Date.now() - _lastEventTime > 30000) {
+        if (Date.now() - _lastEventTime > 10000) {
             try {
                 const resp = await fetch(`/api/tasks/${state.currentTask.id}/runs`);
                 const runs = await resp.json();
@@ -989,6 +989,8 @@ function connectStream() {
         state.streamSource = null;
         document.getElementById('typing-indicator').style.display = 'none';
         document.getElementById('btn-send').disabled = false;
+        // Stream dropped — reload messages from DB to show anything we missed
+        loadMessages(true).then(() => loadTasks());
     };
 }
 
@@ -1922,12 +1924,13 @@ setInterval(async () => {
         const updated = state.tasks.find(t => t.id === state.currentTask.id);
         if (updated) {
             const statusChanged = state.currentTask.status !== updated.status;
+            const msgCountChanged = (state.currentTask.message_count || 0) !== (updated.message_count || 0);
             state.currentTask = updated;
             updateChatActions();
             updateChatHeader();
-            // If task status changed and we're not streaming it, reload messages
-            if (statusChanged && !(state.streaming && state.streamingTaskId === updated.id)) {
-                loadMessages();
+            // Reload messages if status or message count changed (and we're not streaming this task)
+            if ((statusChanged || msgCountChanged) && !(state.streaming && state.streamingTaskId === updated.id)) {
+                loadMessages(true);
             }
         }
     }
