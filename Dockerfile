@@ -28,10 +28,11 @@ RUN npm install -g @anthropic-ai/claude-code
 WORKDIR /app
 COPY pyproject.toml .
 COPY app/ app/
-RUN pip install --no-cache-dir -e . scipy psutil
+RUN pip install --no-cache-dir -e . scipy psutil pytest
 
 # Create non-root user (required for Claude Code --dangerously-skip-permissions flag)
-RUN useradd -m -u 1000 claude
+RUN useradd -m -u 1000 claude \
+    && chown -R claude:claude /usr/local/lib/node_modules /usr/local/bin
 
 # Git config (needed for commits inside the container)
 RUN git config --global user.name "ClaudeWrapper" \

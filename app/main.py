@@ -1019,9 +1019,9 @@ async def update_backend_config(backend_name: str, request: Request) -> Any:
 
 
 _BACKEND_UPDATE_CMDS: dict[str, list[str]] = {
-    "claude": ["npm", "install", "-g", "@anthropic-ai/claude-code@latest"],
-    "gemini": ["npm", "install", "-g", "@anthropic-ai/gemini-cli@latest"],
-    "codex": ["npm", "install", "-g", "codex@latest"],
+    "claude": ["bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash"],
+    "gemini": ["npm", "install", "-g", "@google/gemini-cli@latest"],
+    "codex": ["npm", "install", "-g", "@openai/codex@latest"],
 }
 
 @app.post("/api/backends/{backend_name}/update")
