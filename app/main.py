@@ -409,7 +409,7 @@ async def update_task(task_id: str, request: Request) -> Any:
     if not task:
         return JSONResponse({"error": "Not found"}, 404)
 
-    allowed = {"title", "description", "mode", "priority", "status"}
+    allowed = {"title", "description", "mode", "priority", "status", "wipe_worktree"}
     updates = {k: v for k, v in data.items() if k in allowed and v is not None}
     if updates:
         db.update_task(task_id, **updates)
@@ -425,6 +425,21 @@ async def retry_pr(task_id: str) -> Any:
     if not project:
         return JSONResponse({"error": "Project not found"}, 404)
     pr_url, pr_error = await orchestrator.retry_pr(task, project)
+    if pr_url:
+        return {"ok": True, "pr_url": pr_url}
+    return JSONResponse({"ok": False, "error": pr_error or "PR creation failed"}, 500)
+
+
+@app.post("/api/tasks/{task_id}/push-pr")
+async def push_and_create_pr(task_id: str) -> Any:
+    """Manually push the current worktree and create a PR."""
+    task = db.get_task(task_id)
+    if not task:
+        return JSONResponse({"error": "Not found"}, 404)
+    project = db.get_project(task["project_id"])
+    if not project:
+        return JSONResponse({"error": "Project not found"}, 404)
+    pr_url, pr_error = await orchestrator.push_and_pr(task, project)
     if pr_url:
         return {"ok": True, "pr_url": pr_url}
     return JSONResponse({"ok": False, "error": pr_error or "PR creation failed"}, 500)

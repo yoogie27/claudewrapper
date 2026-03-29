@@ -1002,6 +1002,13 @@ function updateChatActions() {
     const t = state.currentTask;
     const actions = document.getElementById('chat-header-actions');
     let html = '';
+    // Wipe worktree toggle
+    const wipe = t.wipe_worktree !== undefined ? t.wipe_worktree : 1;
+    html += `<label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted);cursor:pointer" title="Reset worktree to base branch before each run">
+        <input type="checkbox" ${wipe ? 'checked' : ''} onchange="toggleWipeWorktree(this.checked)" style="margin:0">Wipe
+    </label> `;
+    // Push & PR button
+    html += `<button class="btn btn-sm btn-secondary" style="font-size:12px" onclick="pushAndPR()" title="Push commits and create PR">Push &amp; PR</button> `;
     if (t.pr_url) {
         html += `<a href="${esc(t.pr_url)}" target="_blank" class="btn btn-sm btn-secondary" style="font-size:12px">PR</a> `;
     }
@@ -1009,6 +1016,43 @@ function updateChatActions() {
         html += `<button class="btn btn-sm" style="background:var(--error);color:#fff;font-size:12px" onclick="cancelRun()">Cancel</button> `;
     }
     actions.innerHTML = html;
+}
+
+async function toggleWipeWorktree(enabled) {
+    if (!state.currentTask) return;
+    try {
+        await fetch(`/api/tasks/${state.currentTask.id}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ wipe_worktree: enabled ? 1 : 0 }),
+        });
+        state.currentTask.wipe_worktree = enabled ? 1 : 0;
+        toast(enabled ? 'Wipe ON' : 'Wipe OFF',
+              enabled ? 'Worktree resets to base before each run' : 'Worktree preserves changes between runs',
+              'info');
+    } catch { toast('Error', 'Failed to update setting', 'error'); }
+}
+
+async function pushAndPR() {
+    if (!state.currentTask) return;
+    toast('Pushing', 'Pushing commits and creating PR...', 'info');
+    try {
+        const resp = await fetch(`/api/tasks/${state.currentTask.id}/push-pr`, { method: 'POST' });
+        const data = await resp.json();
+        if (data.ok) {
+            toast('PR Created', 'Pull request created successfully', 'success');
+            await loadTasks();
+            if (state.currentTask) {
+                state.currentTask = state.tasks.find(t => t.id === state.currentTask.id) || state.currentTask;
+                updateChatActions();
+            }
+            await loadMessages(true);
+        } else {
+            toast('PR Failed', data.error || 'Failed to create PR', 'error');
+        }
+    } catch (err) {
+        toast('Error', 'Network error: ' + err.message, 'error');
+    }
 }
 
 async function cancelRun() {

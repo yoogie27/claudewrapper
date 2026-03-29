@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     claude_session_id TEXT,
     cli_backend TEXT DEFAULT 'claude',
     source_context TEXT,
+    wipe_worktree INTEGER DEFAULT 1,
     pr_url TEXT,
     pr_merged INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -149,6 +150,13 @@ class Database:
             cols = {r[1] for r in self._conn.execute("PRAGMA table_info(tasks)").fetchall()}
             if "source_context" not in cols:
                 self._conn.execute("ALTER TABLE tasks ADD COLUMN source_context TEXT")
+                self._conn.commit()
+
+        # Add wipe_worktree column to tasks (if not present)
+        if "tasks" in tables:
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(tasks)").fetchall()}
+            if "wipe_worktree" not in cols:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN wipe_worktree INTEGER DEFAULT 1")
                 self._conn.commit()
 
         # Add github_token column to projects (if not present)

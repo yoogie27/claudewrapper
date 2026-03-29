@@ -183,9 +183,11 @@ class Orchestrator:
                 ssh_env = self._get_git_ssh_env()
                 wt_root = self.settings.worktree_path()
                 base_branch = project.get("base_branch", "") or ""
-                # Only reset worktree to base when previous PR was merged.
-                # If PR creation failed, preserve existing commits so work isn't lost.
-                reset_to_base = bool(task.get("pr_merged"))
+                # Reset worktree to base when: wipe_worktree is enabled (default)
+                # AND previous PR was merged, OR it's the first run (no worktree yet).
+                # When wipe_worktree is disabled, never reset — changes accumulate.
+                wipe_enabled = task.get("wipe_worktree", 1)
+                reset_to_base = bool(wipe_enabled and task.get("pr_merged"))
                 worktree_path = await asyncio.to_thread(
                     ensure_worktree, workdir, wt_root, identifier, ssh_env, base_branch, reset_to_base
                 )
@@ -381,6 +383,42 @@ class Orchestrator:
                 break
         if not session_dir or not session_dir.exists():
             return None, "No session found for this task."
+
+        pr_url, pr_error = await self._maybe_create_pr(
+            task, session_dir, identifier,
+            base_branch=project.get("base_branch", ""),
+            github_token=github_token,
+        )
+        if pr_url:
+            await self._handle_pr_success(task, identifier, pr_url, github_token)
+            return pr_url, None
+        return None, pr_error
+
+    async def push_and_pr(self, task: dict, project: dict) -> tuple[str | None, str | None]:
+        """Push current worktree and create PR. Uses worktree_path directly."""
+        identifier = task["identifier"]
+        github_token = self._get_github_token(project)
+        if not github_token:
+            return None, "No GitHub token configured."
+
+        worktree_path = task.get("worktree_path")
+        if not worktree_path or not Path(worktree_path).exists():
+            return None, "No worktree found for this task."
+
+        # We need a session dir for worktree meta. Find or create one.
+        runs = self.db.list_runs(task["id"])
+        session_dir = None
+        for r in runs:
+            if r.get("session_dir"):
+                session_dir = Path(r["session_dir"])
+                break
+        if not session_dir:
+            # Create a temporary session dir with worktree meta
+            session_dir = self.settings.data_path() / "sessions" / identifier / "manual-pr"
+            session_dir.mkdir(parents=True, exist_ok=True)
+
+        repo = self.settings.project_repo_path(project["slug"])
+        write_worktree_meta(session_dir, repo, Path(worktree_path))
 
         pr_url, pr_error = await self._maybe_create_pr(
             task, session_dir, identifier,
