@@ -14,10 +14,17 @@ REDESIGN_KEYWORDS = {
     "refactor", "redesign", "rewrite", "rework", "improve", "restructure",
     "cleanup", "modernize", "optimize", "simplify", "migrate", "overhaul",
 }
+PLAN_KEYWORDS = {
+    "plan", "analyze", "analyse", "evaluate", "assess", "investigate",
+    "research", "explore", "review", "audit", "strategy", "proposal",
+    "architecture", "design", "rfc", "spec", "blueprint",
+}
 
 
 def detect_mode(text: str) -> str:
     words = set(re.findall(r"\w+", text.lower()))
+    if words & PLAN_KEYWORDS:
+        return "plan"
     if words & BUG_KEYWORDS:
         return "bug"
     if words & REDESIGN_KEYWORDS:
@@ -60,6 +67,22 @@ You are redesigning/refactoring existing code. Follow this approach:
 5. **Test** — Run existing tests after each change; fix any regressions immediately
 
 Keep the scope focused. Don't expand beyond what was asked. Refactoring is not an excuse to rewrite everything.""",
+
+    "plan": """\
+You are in planning mode. Do NOT write or modify any code. Your job is to analyze, reason, and produce a plan.
+
+Follow this approach:
+
+1. **Understand the Goal** — Read the request carefully. Clarify ambiguities by stating your assumptions.
+2. **Explore the Codebase** — Read the relevant files, understand the current architecture, data flow, and dependencies. List what you found.
+3. **Identify Constraints** — Note technical constraints, existing patterns, potential risks, and edge cases.
+4. **Propose Options** — Present 2-3 approaches with trade-offs (complexity, risk, effort, maintainability).
+5. **Recommend** — Pick the best option and explain why.
+6. **Detailed Plan** — Break the recommended approach into concrete, ordered implementation steps. For each step, name the files to change and describe what to do.
+
+Output format: Use clear markdown headings for each section. Be specific — reference actual file paths, function names, and line numbers. The plan should be detailed enough that a developer (or a follow-up task) can execute it without further questions.
+
+Remember: analysis and planning only. Do NOT create, edit, or delete any files.""",
 }
 
 
@@ -81,10 +104,12 @@ MODE_LABELS = {
     "bug": "Bug Fix",
     "feature": "Feature",
     "redesign": "Redesign",
+    "plan": "Plan",
 }
 
 MODE_COLORS = {
     "bug": "#ef4444",
     "feature": "#e11d48",
     "redesign": "#f59e0b",
+    "plan": "#3b82f6",
 }

@@ -492,7 +492,7 @@ async function loadModePrompts() {
     try {
         const resp = await fetch('/api/mode-prompts');
         const data = await resp.json();
-        const modeColors = {bug:'#ef4444',feature:'#e11d48',redesign:'#f59e0b'};
+        const modeColors = {bug:'#ef4444',feature:'#e11d48',redesign:'#f59e0b',plan:'#3b82f6'};
         container.innerHTML = Object.entries(data).map(([mode, info]) => `
             <div class="mode-prompt-card">
                 <div class="mode-prompt-header">

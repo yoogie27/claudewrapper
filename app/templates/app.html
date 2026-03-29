@@ -495,7 +495,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 let _manualMode = null; // null = auto-detect, string = manual override
-const _modes = ['feature', 'bug', 'redesign'];
+const _modes = ['feature', 'bug', 'redesign', 'plan'];
 function cycleMode() {
     const badge = document.getElementById('quick-task-mode');
     const current = _manualMode || 'feature';
