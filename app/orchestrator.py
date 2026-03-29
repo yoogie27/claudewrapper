@@ -669,6 +669,18 @@ class Orchestrator:
                             pass
                 if entries:
                     self.logger.info("Cleaned %d old runs", len(entries))
+
+                # Auto-delete tasks older than 14 days
+                task_cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+                old_tasks = self.db.list_old_tasks(task_cutoff)
+                for t in old_tasks:
+                    try:
+                        self.cleanup_task(t["id"])
+                        self.db.delete_task(t["id"])
+                    except Exception as exc:
+                        self.logger.warning("Auto-delete task %s failed: %s", t["identifier"], exc)
+                if old_tasks:
+                    self.logger.info("Auto-deleted %d tasks older than 14 days", len(old_tasks))
             except Exception as exc:
                 self.logger.error("Cleanup error: %s", exc)
 

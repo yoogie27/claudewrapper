@@ -1018,14 +1018,46 @@ async function cancelRun() {
     }
 }
 
-async function deleteTask(id) {
-    if (!confirm('Delete this task and all its runs?')) return;
-    await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
-    state.currentTask = null;
-    document.getElementById('chat-empty').style.display = 'flex';
-    document.getElementById('chat-messages').style.display = 'none';
-    document.getElementById('chat-input-area').style.display = 'none';
-    await loadTasks();
+function deleteTask(id) {
+    // Replace context menu content with inline confirm
+    const menu = document.getElementById('ctx-menu');
+    menu.innerHTML = `
+        <div style="padding:8px 12px;font-size:13px;color:var(--text-muted)">Delete task and all runs?</div>
+        <div style="display:flex;gap:6px;padding:4px 12px 8px">
+            <button class="btn btn-sm" style="background:var(--error,#ef4444);color:#fff;border:none;flex:1" onclick="confirmDeleteTask('${id}')">Delete</button>
+            <button class="btn btn-sm btn-secondary" style="flex:1" onclick="hideCtx()">Cancel</button>
+        </div>
+    `;
+}
+async function confirmDeleteTask(id) {
+    const menu = document.getElementById('ctx-menu');
+    menu.innerHTML = '<div style="padding:12px;font-size:13px;color:var(--text-muted);text-align:center">Deleting...</div>';
+    // Fade out the task item
+    const taskEl = document.querySelector(`.task-item[data-id="${id}"]`);
+    if (taskEl) {
+        taskEl.style.transition = 'opacity .3s, transform .3s';
+        taskEl.style.opacity = '0.4';
+        taskEl.style.pointerEvents = 'none';
+    }
+    try {
+        await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
+        if (state.currentTask?.id === id) {
+            state.currentTask = null;
+            document.getElementById('chat-empty').style.display = 'flex';
+            document.getElementById('chat-messages').style.display = 'none';
+            document.getElementById('chat-input-area').style.display = 'none';
+        }
+        if (taskEl) {
+            taskEl.style.transform = 'translateX(-100%)';
+            await new Promise(r => setTimeout(r, 300));
+        }
+        await loadTasks();
+        toast('Deleted', 'Task removed', 'info');
+    } catch {
+        if (taskEl) { taskEl.style.opacity = '1'; taskEl.style.pointerEvents = ''; }
+        toast('Error', 'Failed to delete task', 'error');
+    }
+    hideCtx();
 }
 
 // ── Re-clone Project ──

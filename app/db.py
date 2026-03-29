@@ -309,6 +309,19 @@ class Database:
             conn.execute("DELETE FROM runs WHERE task_id=?", (id,))
             conn.execute("DELETE FROM tasks WHERE id=?", (id,))
 
+    def list_old_tasks(self, older_than_iso: str) -> list[dict]:
+        """Return tasks whose last activity is older than the given cutoff."""
+        rows = self._conn.execute(
+            """SELECT t.id, t.identifier, t.project_id, t.worktree_path
+               FROM tasks t
+               LEFT JOIN messages m ON m.task_id = t.id
+               WHERE t.status NOT IN ('in_progress', 'running')
+               GROUP BY t.id
+               HAVING COALESCE(MAX(m.created_at), t.updated_at, t.created_at) < ?""",
+            (older_than_iso,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     # ── Messages ──
 
     def create_message(self, id: str, task_id: str, role: str, content: str,
