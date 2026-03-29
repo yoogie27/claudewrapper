@@ -336,9 +336,31 @@ class CodexBackend(CliBackend):
     name = "codex"
     display_name = "Codex CLI"
 
-    def __init__(self, command_template: str = "codex --approval-mode full-auto --quiet {prompt_path}") -> None:
+    def __init__(self, command_template: str = "codex exec --sandbox danger-full-access") -> None:
         super().__init__()
         self.command_template = command_template
+
+    @property
+    def _uses_stdin(self) -> bool:
+        return True
+
+    def prepare_workdir(self, workdir: Path) -> None:
+        """Ensure Codex trusts the workdir in its config.toml."""
+        config_dir = Path.home() / ".codex"
+        config_path = config_dir / "config.toml"
+        norm_path = str(workdir).replace("\\", "/")
+        section = f'[projects."{norm_path}"]\ntrust_level = "trusted"\n'
+
+        try:
+            config_dir.mkdir(parents=True, exist_ok=True)
+            existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+            if f'[projects."{norm_path}"]' not in existing:
+                with open(config_path, "a", encoding="utf-8") as f:
+                    if existing and not existing.endswith("\n"):
+                        f.write("\n")
+                    f.write(f"\n{section}")
+        except Exception:
+            pass
 
     def format_command(self, prompt_path: Path, workdir: Path | None,
                        prompt_text: str, resume_session_id: str | None = None) -> list[str]:
@@ -379,7 +401,7 @@ BACKENDS: dict[str, type[CliBackend]] = {
 BACKEND_CHOICES = [
     {"value": "claude", "label": "Claude Code", "default_cmd": "claude -p --prompt-file {prompt_path} --dangerously-skip-permissions --output-format stream-json"},
     {"value": "gemini", "label": "Gemini CLI", "default_cmd": "gemini -y -p {prompt_path}"},
-    {"value": "codex", "label": "Codex CLI", "default_cmd": "codex --approval-mode full-auto --quiet {prompt_path}"},
+    {"value": "codex", "label": "Codex CLI", "default_cmd": "codex exec --sandbox danger-full-access"},
 ]
 
 
