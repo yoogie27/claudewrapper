@@ -447,7 +447,8 @@ def _parse_sse_line(line: str):
         elif msg_type == "result":
             yield "result", {"cost_usd": obj.get("total_cost_usd", 0), "usage": obj.get("usage", {})}
     except (json.JSONDecodeError, ValueError):
-        pass  # Skip unparseable lines (partial JSON, system messages, etc.)
+        # Non-JSON output (Codex, Gemini, etc.) — stream as raw text
+        yield "text", {"text": line + "\n"}
 
 
 @app.get("/api/tasks/{task_id}/stream")
@@ -458,6 +459,7 @@ async def stream_task(task_id: str) -> Any:
     async def generate():
         current_run_id = None
         pos = 0
+        stderr_pos = 0
         line_buffer = ""
         idle = 0
         stale_ticks = 0  # ticks with no new output
@@ -482,6 +484,7 @@ async def stream_task(task_id: str) -> Any:
                     yield f"event: run_complete\ndata: {{}}\n\n"
                 current_run_id = active["id"]
                 pos = 0
+                stderr_pos = 0
                 line_buffer = ""
                 stale_ticks = 0
 
@@ -512,6 +515,23 @@ async def stream_task(task_id: str) -> Any:
                     except Exception:
                         pass
 
+                # Also stream stderr
+                stderr_path = Path(session_dir) / "stderr.txt"
+                if stderr_path.exists():
+                    try:
+                        with open(stderr_path, "r", encoding="utf-8", errors="replace") as f:
+                            f.seek(stderr_pos)
+                            err_chunk = f.read()
+                            stderr_pos = f.tell()
+                        if err_chunk:
+                            had_output = True
+                            for err_line in err_chunk.splitlines():
+                                err_line = err_line.strip()
+                                if err_line:
+                                    yield f"event: text\ndata: {json.dumps({'text': err_line + chr(10), 'stderr': True})}\n\n"
+                    except Exception:
+                        pass
+
             # Re-check this run's status (may have finished since we read active)
             current = db.get_run(current_run_id)
             if current and current["status"] not in ("pending", "running"):
@@ -522,6 +542,7 @@ async def stream_task(task_id: str) -> Any:
                 # Don't exit — loop back to check for more queued runs
                 current_run_id = None
                 pos = 0
+                stderr_pos = 0
                 line_buffer = ""
                 stale_ticks = 0
                 await asyncio.sleep(1)
@@ -539,6 +560,7 @@ async def stream_task(task_id: str) -> Any:
                         db.update_task(task_id, status="failed")
                     current_run_id = None
                     pos = 0
+                    stderr_pos = 0
                     line_buffer = ""
                     stale_ticks = 0
                     await asyncio.sleep(0.5)
