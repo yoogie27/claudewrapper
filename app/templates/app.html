@@ -1552,10 +1552,42 @@ function selectSlashItem(idx) {
     const matches = _currentSlashMatches || [];
     const p = matches[idx];
     if (!p) return;
-    input.value = p.prompt;
+    // Send the slash command directly — don't paste the full prompt into the input.
+    // The short command name is stored as user message; the full prompt is sent
+    // as prompt_template so it goes directly to the model without duplicating in history.
+    input.value = '';
     hideSlashMenu();
     autoResizeInput();
-    input.focus();
+    _sendSlashCommand(p);
+}
+
+async function _sendSlashCommand(prompt) {
+    if (!state.currentTask || _sending) return;
+    _sending = true;
+    document.getElementById('btn-send').disabled = true;
+    const displayMsg = `/${prompt.slash_command}`;
+
+    // Optimistically add short display message
+    const now = new Date().toISOString();
+    const msgObj = { role: 'user', content: displayMsg, created_at: now, metadata: {} };
+    state.messages.push(msgObj);
+    const container = document.getElementById('chat-messages');
+    container.insertAdjacentHTML('beforeend', renderMessage(msgObj));
+    maybeScrollToBottom();
+
+    try {
+        const resp = await fetch(`/api/tasks/${state.currentTask.id}/messages`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ content: displayMsg, prompt_template: prompt.prompt }),
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            startStreaming(state.currentTask.id);
+        }
+    } catch {}
+    _sending = false;
+    document.getElementById('btn-send').disabled = false;
 }
 
 let _currentSlashMatches = [];

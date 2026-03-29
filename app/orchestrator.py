@@ -222,10 +222,13 @@ class Orchestrator:
                 self.db.update_task(task["id"], status="failed")
                 return
 
-        # Build prompt
-        messages = self.db.list_messages(task["id"])
-        prompt = self._build_prompt(task, project, messages)
-        self.db.update_run(run_id, prompt=prompt)
+        # Build prompt — use pre-filled prompt_template from slash commands if available
+        if run.get("prompt") and run["prompt"].strip():
+            prompt = run["prompt"]
+        else:
+            messages = self.db.list_messages(task["id"])
+            prompt = self._build_prompt(task, project, messages)
+            self.db.update_run(run_id, prompt=prompt)
 
         # Select CLI backend for this task
         backend_name = task.get("cli_backend") or "claude"
@@ -499,8 +502,14 @@ class Orchestrator:
                 self.logger.warning("Failed to terminate run %s: %s", run_id, exc)
         return False
 
-    async def enqueue_message(self, task_id: str, content: str) -> dict:
-        """Create a user message and enqueue a Claude run for it."""
+    async def enqueue_message(self, task_id: str, content: str,
+                              prompt_template: str = "") -> dict:
+        """Create a user message and enqueue a run for it.
+
+        If prompt_template is provided (from slash commands), it is stored on the
+        run as metadata and used directly as the prompt instead of building from
+        conversation history — avoids duplicating the template in the prompt.
+        """
         task = self.db.get_task(task_id)
         if not task:
             raise ValueError("Task not found")
@@ -509,13 +518,14 @@ class Orchestrator:
         if task["status"] in ("done", "failed"):
             self.db.update_task(task_id, status="open")
 
-        # Store user message
+        # Store user message (short display form, e.g. "/bugs")
         msg_id = uuid.uuid4().hex
         self.db.create_message(msg_id, task_id, "user", content)
 
-        # Create pending run
+        # Create pending run. If a slash-command prompt_template is provided,
+        # store it in the run's prompt field so _execute_run uses it directly.
         run_id = uuid.uuid4().hex
-        run = self.db.create_run(run_id, task_id)
+        run = self.db.create_run(run_id, task_id, prompt=prompt_template or "")
 
         # Ensure worker is running for this project
         self._ensure_worker(task["project_id"])

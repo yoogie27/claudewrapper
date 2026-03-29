@@ -527,6 +527,7 @@ async def list_messages(task_id: str, request: Request) -> Any:
 async def send_message(task_id: str, request: Request) -> Any:
     data = await request.json()
     content = data.get("content", "").strip()
+    prompt_template = data.get("prompt_template", "").strip()
     if not content:
         return JSONResponse({"error": "Content is required"}, 400)
 
@@ -538,7 +539,7 @@ async def send_message(task_id: str, request: Request) -> Any:
     active = db.get_active_run_for_task(task_id)
     queued = active is not None
 
-    run = await orchestrator.enqueue_message(task_id, content)
+    run = await orchestrator.enqueue_message(task_id, content, prompt_template=prompt_template)
     return {"ok": True, "run_id": run["id"], "task_id": task_id, "queued": queued}
 
 
