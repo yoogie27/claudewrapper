@@ -69,6 +69,15 @@ class Orchestrator:
             backend = create_backend(backend_name, command_template=custom_cmd)
         backend.model = self.db.get_config(f"{backend_name}_model", "") or self.db.get_config("claude_model", "") or ""
         backend.fallback_model = self.db.get_config(f"{backend_name}_fallback_model", "") or self.db.get_config("claude_fallback_model", "") or ""
+        # Load persistent environment variables for this backend
+        env_json = self.db.get_config(f"backend_env:{backend_name}", "") or ""
+        if env_json:
+            try:
+                backend._extra_env = json.loads(env_json)
+            except (json.JSONDecodeError, ValueError):
+                backend._extra_env = {}
+        else:
+            backend._extra_env = {}
         return backend
 
     async def start(self) -> None:
@@ -245,11 +254,12 @@ class Orchestrator:
         proc_holder: dict = {}
         self._proc_holders[run_id] = proc_holder
         ssh_env = self._get_git_ssh_env()
+        merged_env = {**(ssh_env or {}), **getattr(backend, "_extra_env", {})}
 
         try:
             run_result = await asyncio.to_thread(
                 backend.run, identifier, prompt, session_dir, workdir,
-                proc_holder, resume_session_id, ssh_env,
+                proc_holder, resume_session_id, merged_env or None,
             )
         except Exception as exc:
             self.logger.error("[%s] %s runner error: %s", identifier, backend.display_name, exc)

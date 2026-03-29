@@ -388,6 +388,11 @@ async function loadBackends() {
                        value="${esc(b.custom_cmd)}"
                        placeholder="${esc(b.default_cmd)}"
                        style="width:100%;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:monospace">
+                <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;margin-top:8px">Environment variables</label>
+                <div id="backend-env-${b.value}" style="display:flex;flex-direction:column;gap:4px">
+                    ${renderEnvRows(b.value, b.env_vars)}
+                </div>
+                <button class="btn btn-sm btn-secondary" onclick="addEnvRow('${b.value}')" style="margin-top:4px;font-size:11px">+ Add variable</button>
                 <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
                     <button class="btn btn-sm btn-primary" onclick="saveBackendCmd('${b.value}')">Save</button>
                     <button class="btn btn-sm btn-secondary" onclick="resetBackendCmd('${b.value}')">Reset</button>
@@ -398,18 +403,58 @@ async function loadBackends() {
         `).join('');
     } catch {}
 }
+function renderEnvRows(name, envVars) {
+    const entries = Object.entries(envVars || {});
+    if (!entries.length) return `<div style="font-size:11px;color:var(--text-dim)">No environment variables set</div>`;
+    return entries.map(([k, v], i) => `
+        <div style="display:flex;gap:4px;align-items:center" class="env-row">
+            <input type="text" value="${esc(k)}" placeholder="KEY" class="env-key"
+                   style="width:35%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:monospace">
+            <input type="text" value="${esc(v)}" placeholder="value" class="env-val"
+                   style="flex:1;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:monospace">
+            <button onclick="this.parentElement.remove()" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:16px;padding:0 4px">&times;</button>
+        </div>
+    `).join('');
+}
+function addEnvRow(name) {
+    const container = document.getElementById('backend-env-' + name);
+    const placeholder = container.querySelector('div[style*="color:var(--text-dim)"]');
+    if (placeholder && !placeholder.classList.contains('env-row')) placeholder.remove();
+    container.insertAdjacentHTML('beforeend', `
+        <div style="display:flex;gap:4px;align-items:center" class="env-row">
+            <input type="text" value="" placeholder="KEY" class="env-key"
+                   style="width:35%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:monospace">
+            <input type="text" value="" placeholder="value" class="env-val"
+                   style="flex:1;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:monospace">
+            <button onclick="this.parentElement.remove()" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:16px;padding:0 4px">&times;</button>
+        </div>
+    `);
+}
+function collectEnvVars(name) {
+    const container = document.getElementById('backend-env-' + name);
+    const rows = container.querySelectorAll('.env-row');
+    const env = {};
+    rows.forEach(row => {
+        const k = row.querySelector('.env-key').value.trim();
+        const v = row.querySelector('.env-val').value.trim();
+        if (k) env[k] = v;
+    });
+    return env;
+}
 async function saveBackendCmd(name) {
     const cmd = document.getElementById('backend-cmd-' + name).value.trim();
+    const envVars = collectEnvVars(name);
     try {
         const resp = await fetch('/api/backends/' + name + '/config', {
             method: 'PUT', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ command_template: cmd }),
+            body: JSON.stringify({ command_template: cmd, env_vars: envVars }),
         });
-        if (resp.ok) toast('Saved', name + ' command updated', 'success');
+        if (resp.ok) toast('Saved', name + ' configuration updated', 'success');
     } catch { toast('Error', 'Failed to save', 'error'); }
 }
 async function resetBackendCmd(name) {
     document.getElementById('backend-cmd-' + name).value = '';
+    document.getElementById('backend-env-' + name).innerHTML = renderEnvRows(name, {});
     await saveBackendCmd(name);
     toast('Reset', name + ' command reset to default', 'info');
 }

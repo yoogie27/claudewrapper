@@ -1000,7 +1000,14 @@ async def list_backends() -> Any:
     result = []
     for b in BACKEND_CHOICES:
         custom_cmd = db.get_config(f"backend_cmd:{b['value']}", "") or ""
-        result.append({**b, "custom_cmd": custom_cmd})
+        env_json = db.get_config(f"backend_env:{b['value']}", "") or ""
+        env_vars: dict = {}
+        if env_json:
+            try:
+                env_vars = json.loads(env_json)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        result.append({**b, "custom_cmd": custom_cmd, "env_vars": env_vars})
     return result
 
 
@@ -1015,6 +1022,16 @@ async def update_backend_config(backend_name: str, request: Request) -> Any:
         db.set_config(f"backend_cmd:{backend_name}", cmd)
     else:
         db.delete_config(f"backend_cmd:{backend_name}")
+    # Persist environment variables (JSON dict)
+    if "env_vars" in data:
+        env_vars = data["env_vars"]
+        if isinstance(env_vars, dict):
+            # Remove empty-value entries
+            env_vars = {k: v for k, v in env_vars.items() if k.strip() and v.strip()}
+            if env_vars:
+                db.set_config(f"backend_env:{backend_name}", json.dumps(env_vars))
+            else:
+                db.delete_config(f"backend_env:{backend_name}")
     return {"ok": True}
 
 
