@@ -32,7 +32,7 @@ RUN pip install --no-cache-dir -e . scipy psutil pytest
 
 # Create non-root user (required for Claude Code --dangerously-skip-permissions flag)
 RUN useradd -m -u 1000 claude \
-    && chown -R claude:claude /usr/local/lib/node_modules /usr/local/bin
+    && chown -R claude:claude $(npm root -g) $(dirname $(which npm)) 2>/dev/null || true
 
 # Git config (needed for commits inside the container)
 RUN git config --global user.name "ClaudeWrapper" \
