@@ -543,20 +543,24 @@ async def send_message(task_id: str, request: Request) -> Any:
 
 
 def _parse_sse_line(line: str):
-    """Parse a single stream-json line into SSE events. Yields (event, data) tuples."""
+    """Parse a single stream-json line into SSE events. Yields (event, data) tuples.
+
+    Handles both Claude stream-json and Codex JSONL formats.
+    """
     line = line.strip()
     if not line:
         return
     try:
         obj = json.loads(line)
         msg_type = obj.get("type", "")
+
+        # ── Claude stream-json events ──
         if msg_type == "assistant":
             content_blocks = (obj.get("message") or {}).get("content", [])
             for block in (content_blocks if isinstance(content_blocks, list) else []):
                 if block.get("type") == "text":
                     yield "text", {"text": block["text"]}
                 elif block.get("type") == "tool_use":
-                    # Send only key hints, not the full input (can be huge)
                     inp = block.get("input", {})
                     hint = {}
                     for k in ("command", "file_path", "pattern", "query", "content", "old_string"):
@@ -567,8 +571,36 @@ def _parse_sse_line(line: str):
                     yield "tool", {"tool": block.get("name", ""), "input": hint}
         elif msg_type == "result":
             yield "result", {"cost_usd": obj.get("total_cost_usd", 0), "usage": obj.get("usage", {})}
+
+        # ── Codex JSONL events ──
+        elif msg_type in ("item.completed", "item.updated"):
+            item = obj.get("item", {})
+            item_type = item.get("type", "")
+            if item_type == "agent_message":
+                text = item.get("text", "")
+                if text:
+                    yield "text", {"text": text}
+            elif item_type == "command_execution":
+                cmd = item.get("command", "")
+                if cmd:
+                    yield "tool", {"tool": "shell", "input": {"command": cmd[:200]}}
+            elif item_type == "file_change":
+                changes = item.get("changes", [])
+                for c in changes[:5]:
+                    yield "tool", {"tool": "file_change", "input": {"file_path": c.get("path", "")}}
+        elif msg_type == "turn.completed":
+            usage = obj.get("usage", {})
+            if usage:
+                yield "result", {"cost_usd": 0, "usage": usage}
+        elif msg_type == "turn.failed":
+            error = obj.get("error", {})
+            err_msg = error.get("message", str(error)) if isinstance(error, dict) else str(error)
+            yield "text", {"text": f"\n**Error:** {err_msg}\n"}
+
+        # Unknown JSON — skip silently (don't spam raw JSON to chat)
+
     except (json.JSONDecodeError, ValueError):
-        # Non-JSON output (Codex, Gemini, etc.) — stream as raw text
+        # Non-JSON output (Gemini plain text, etc.) — stream as raw text
         yield "text", {"text": line + "\n"}
 
 
@@ -1150,7 +1182,9 @@ async def list_backends() -> Any:
                 env_vars = json.loads(env_json)
             except (json.JSONDecodeError, ValueError):
                 pass
-        result.append({**b, "custom_cmd": custom_cmd, "env_vars": env_vars})
+        # Mask env var values — only expose keys and whether set
+        masked_env = {k: ("***" if v else "") for k, v in env_vars.items()}
+        result.append({**b, "custom_cmd": custom_cmd, "env_vars": masked_env})
     return result
 
 
@@ -1166,13 +1200,35 @@ async def update_backend_config(backend_name: str, request: Request) -> Any:
     else:
         db.delete_config(f"backend_cmd:{backend_name}")
     # Persist environment variables (JSON dict)
+    # Client only sends changed/new values; masked (unchanged) values are omitted.
+    # We merge with existing so unchanged keys are preserved.
     if "env_vars" in data:
-        env_vars = data["env_vars"]
-        if isinstance(env_vars, dict):
-            # Remove empty-value entries
-            env_vars = {k: v for k, v in env_vars.items() if k.strip() and v.strip()}
-            if env_vars:
-                db.set_config(f"backend_env:{backend_name}", json.dumps(env_vars))
+        new_vars = data["env_vars"]
+        if isinstance(new_vars, dict):
+            # Load existing
+            existing_json = db.get_config(f"backend_env:{backend_name}", "") or ""
+            existing: dict = {}
+            if existing_json:
+                try:
+                    existing = json.loads(existing_json)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            # Remove keys whose rows were deleted (not in new_vars AND not masked)
+            # Client sends all visible rows; if a key is gone, the row was removed
+            if data.get("_env_all_keys"):
+                # Full key list from client — remove any existing key not in this list
+                all_keys = set(data["_env_all_keys"])
+                existing = {k: v for k, v in existing.items() if k in all_keys}
+            # Merge new values (skip empty values = row was cleared)
+            for k, v in new_vars.items():
+                k = k.strip()
+                v = v.strip()
+                if k and v:
+                    existing[k] = v
+                elif k and not v:
+                    existing.pop(k, None)
+            if existing:
+                db.set_config(f"backend_env:{backend_name}", json.dumps(existing))
             else:
                 db.delete_config(f"backend_env:{backend_name}")
     return {"ok": True}

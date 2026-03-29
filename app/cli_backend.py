@@ -336,7 +336,10 @@ class CodexBackend(CliBackend):
     name = "codex"
     display_name = "Codex CLI"
 
-    def __init__(self, command_template: str = "codex exec --sandbox danger-full-access") -> None:
+    # Codex exec: prompt piped via stdin (no arg = reads stdin as prompt).
+    # --json outputs JSONL events for streaming.
+    # --color never prevents ANSI escapes.
+    def __init__(self, command_template: str = "codex exec --json --color never --dangerously-bypass-approvals-and-sandbox") -> None:
         super().__init__()
         self.command_template = command_template
 
@@ -372,22 +375,57 @@ class CodexBackend(CliBackend):
         return cmd
 
     def parse_result(self, stdout: str) -> RunResult:
+        """Parse Codex JSONL output.
+
+        Codex --json emits typed events:
+        - item.completed with item.type == "agent_message" → assistant text
+        - turn.completed → usage stats
+        - turn.failed → error
+        """
         text = (stdout or "").strip()
         if not text:
             return RunResult(returncode=-1, stdout="", stderr="", summary="No output captured.")
-        for line in reversed(text.splitlines()):
+
+        result = RunResult(returncode=0, stdout=stdout, stderr="")
+        agent_texts: list[str] = []
+
+        for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
                 obj = json.loads(line)
-                if isinstance(obj, dict) and ("type" in obj or "result" in obj):
-                    summary = obj.get("result", "") or obj.get("text", "")
-                    return RunResult(returncode=0, stdout=stdout, stderr="",
-                                     summary=str(summary).strip()[:5000], model=obj.get("model", ""))
+                if not isinstance(obj, dict):
+                    continue
+                evt_type = obj.get("type", "")
+
+                if evt_type in ("item.completed", "item.updated"):
+                    item = obj.get("item", {})
+                    if item.get("type") == "agent_message":
+                        msg_text = item.get("text", "")
+                        if msg_text:
+                            agent_texts.append(msg_text)
+
+                elif evt_type == "turn.completed":
+                    usage = obj.get("usage", {})
+                    result.input_tokens = usage.get("input_tokens", 0) or 0
+                    result.output_tokens = usage.get("output_tokens", 0) or 0
+
+                elif evt_type == "turn.failed":
+                    error = obj.get("error", {})
+                    err_msg = error.get("message", "") if isinstance(error, dict) else str(error)
+                    if err_msg:
+                        agent_texts.append(f"**Error:** {err_msg}")
+
             except (json.JSONDecodeError, ValueError):
                 continue
-        return RunResult(returncode=0, stdout=stdout, stderr="", summary=text[:5000])
+
+        if agent_texts:
+            result.summary = "\n".join(agent_texts).strip()[:5000]
+        else:
+            # Fallback: use raw output (might be non-JSON plain text mode)
+            result.summary = text[:5000]
+        return result
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -401,7 +439,7 @@ BACKENDS: dict[str, type[CliBackend]] = {
 BACKEND_CHOICES = [
     {"value": "claude", "label": "Claude Code", "default_cmd": "claude -p --prompt-file {prompt_path} --dangerously-skip-permissions --output-format stream-json"},
     {"value": "gemini", "label": "Gemini CLI", "default_cmd": "gemini -y -p {prompt_path}"},
-    {"value": "codex", "label": "Codex CLI", "default_cmd": "codex exec --sandbox danger-full-access"},
+    {"value": "codex", "label": "Codex CLI", "default_cmd": "codex exec --json --color never --dangerously-bypass-approvals-and-sandbox"},
 ]
 
 

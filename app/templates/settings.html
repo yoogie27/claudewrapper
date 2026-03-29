@@ -15,7 +15,7 @@
         </div>
         <div id="gh-status">
             {% if settings.github_token %}
-            <div class="diag-row diag-ok"><span class="diag-icon">&#10003;</span> Token configured ({{ settings.github_token[:4] }}...{{ settings.github_token[-4:] }})</div>
+            <div class="diag-row diag-ok"><span class="diag-icon">&#10003;</span> Token configured</div>
             {% else %}
             <div class="diag-row diag-fail"><span class="diag-icon">&#10007;</span> GITHUB_TOKEN not set</div>
             {% endif %}
@@ -406,12 +406,13 @@ async function loadBackends() {
 function renderEnvRows(name, envVars) {
     const entries = Object.entries(envVars || {});
     if (!entries.length) return `<div style="font-size:11px;color:var(--text-dim)">No environment variables set</div>`;
-    return entries.map(([k, v], i) => `
+    return entries.map(([k, v]) => `
         <div style="display:flex;gap:4px;align-items:center" class="env-row">
-            <input type="text" value="${esc(k)}" placeholder="KEY" class="env-key"
+            <input type="text" value="${esc(k)}" placeholder="KEY" class="env-key" readonly
                    style="width:35%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:monospace">
-            <input type="text" value="${esc(v)}" placeholder="value" class="env-val"
-                   style="flex:1;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:monospace">
+            <input type="password" value="${esc(v)}" placeholder="value" class="env-val" data-masked="true"
+                   style="flex:1;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:monospace"
+                   onfocus="if(this.dataset.masked==='true'){this.value='';this.type='text';this.dataset.masked='false'}">
             <button onclick="this.parentElement.remove()" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:16px;padding:0 4px">&times;</button>
         </div>
     `).join('');
@@ -436,18 +437,32 @@ function collectEnvVars(name) {
     const env = {};
     rows.forEach(row => {
         const k = row.querySelector('.env-key').value.trim();
-        const v = row.querySelector('.env-val').value.trim();
+        const valInput = row.querySelector('.env-val');
+        const v = valInput.value.trim();
+        // Skip rows where the value is still masked (unchanged)
+        if (valInput.dataset.masked === 'true') return;
         if (k) env[k] = v;
     });
     return env;
 }
+function collectEnvAllKeys(name) {
+    const container = document.getElementById('backend-env-' + name);
+    const rows = container.querySelectorAll('.env-row');
+    const keys = [];
+    rows.forEach(row => {
+        const k = row.querySelector('.env-key').value.trim();
+        if (k) keys.push(k);
+    });
+    return keys;
+}
 async function saveBackendCmd(name) {
     const cmd = document.getElementById('backend-cmd-' + name).value.trim();
     const envVars = collectEnvVars(name);
+    const allKeys = collectEnvAllKeys(name);
     try {
         const resp = await fetch('/api/backends/' + name + '/config', {
             method: 'PUT', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ command_template: cmd, env_vars: envVars }),
+            body: JSON.stringify({ command_template: cmd, env_vars: envVars, _env_all_keys: allKeys }),
         });
         if (resp.ok) toast('Saved', name + ' configuration updated', 'success');
     } catch { toast('Error', 'Failed to save', 'error'); }
