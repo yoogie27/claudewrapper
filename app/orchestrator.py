@@ -222,9 +222,10 @@ class Orchestrator:
                 self.db.update_task(task["id"], status="failed")
                 return
 
-        # Build prompt — use pre-filled prompt_template from slash commands if available
+        # Build prompt — use pre-filled prompt_template from slash commands if available,
+        # but always append git/completion instructions so commits happen.
         if run.get("prompt") and run["prompt"].strip():
-            prompt = run["prompt"]
+            prompt = run["prompt"] + "\n\n" + self._completion_instructions(task, project)
         else:
             messages = self.db.list_messages(task["id"])
             prompt = self._build_prompt(task, project, messages)
@@ -452,7 +453,13 @@ class Orchestrator:
                 parts.append(content)
                 parts.append("")
 
-        # Git context
+        parts.append(self._completion_instructions(task, project))
+
+        return "\n".join(parts)
+
+    def _completion_instructions(self, task: dict, project: dict) -> str:
+        """Git context and commit instructions appended to every prompt."""
+        parts = []
         if task.get("branch_name"):
             parts.extend([
                 "---",
@@ -462,17 +469,19 @@ class Orchestrator:
                 f"- Base: `{project.get('base_branch', 'main')}`",
             ])
 
-        # Completion instructions
         prefix = "fix" if task["mode"] == "bug" else "feat" if task["mode"] == "feature" else "refactor"
+        commit_msg = f"{prefix}: {task['title']} ({task['identifier']})"
         parts.extend([
             "",
             "## Completion",
             "",
-            "After implementation and testing:",
-            f"1. Commit with: `{prefix}: {task['title']} ({task['identifier']})`",
-            "2. Write a brief summary of what you changed and why.",
+            "IMPORTANT: After implementation and testing, you MUST commit your changes:",
+            f"1. `git add -A`",
+            f'2. `git commit -m "{commit_msg}"`',
+            "3. Write a brief summary of what you changed and why.",
+            "",
+            "Do NOT skip the commit step. Your work is lost if you don't commit.",
         ])
-
         return "\n".join(parts)
 
     # ── Job Control ──
