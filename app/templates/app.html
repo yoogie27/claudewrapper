@@ -642,12 +642,25 @@ async function selectTask(id) {
     showPanel('chat');
 }
 
+let _loadingMessages = false;
 async function loadMessages(skipStreamReconnect) {
     if (!state.currentTask) return;
-    const resp = await fetch(`/api/tasks/${state.currentTask.id}/messages`);
-    state.messages = await resp.json();
+    // Prevent concurrent loads from stomping each other
+    if (_loadingMessages) return;
+    _loadingMessages = true;
+    try {
+    const taskId = state.currentTask.id;
+    const resp = await fetch(`/api/tasks/${taskId}/messages`);
+    const msgs = await resp.json();
+    // Guard: if user switched tasks while we were fetching, discard
+    if (!state.currentTask || state.currentTask.id !== taskId) return;
+    // Don't replace messages with fewer results (DB might be mid-write)
+    if (msgs.length < state.messages.length && state.streaming) return;
+    state.messages = msgs;
     // Mark as seen since user is viewing this task
     _markSeen(state.currentTask.id, state.messages.length);
+    // Don't re-render if currently streaming — streamed content would be lost
+    if (state.streaming && state.streamingTaskId === taskId) return;
     renderMessages();
 
     if (skipStreamReconnect) return;
@@ -673,6 +686,7 @@ async function loadMessages(skipStreamReconnect) {
         document.getElementById('typing-indicator').style.display = 'none';
         document.getElementById('btn-send').disabled = false;
     }
+    } finally { _loadingMessages = false; }
 }
 
 function renderMessages() {
