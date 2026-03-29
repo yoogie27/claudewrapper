@@ -309,6 +309,20 @@ async def update_task(task_id: str, request: Request) -> Any:
     return db.get_task(task_id)
 
 
+@app.post("/api/tasks/{task_id}/retry-pr")
+async def retry_pr(task_id: str) -> Any:
+    task = db.get_task(task_id)
+    if not task:
+        return JSONResponse({"error": "Not found"}, 404)
+    project = db.get_project(task["project_id"])
+    if not project:
+        return JSONResponse({"error": "Project not found"}, 404)
+    pr_url, pr_error = await orchestrator.retry_pr(task, project)
+    if pr_url:
+        return {"ok": True, "pr_url": pr_url}
+    return JSONResponse({"ok": False, "error": pr_error or "PR creation failed"}, 500)
+
+
 @app.delete("/api/tasks/{task_id}")
 async def delete_task(task_id: str) -> Any:
     task = db.get_task(task_id)

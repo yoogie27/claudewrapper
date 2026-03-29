@@ -324,31 +324,69 @@ class Orchestrator:
             pr_url, pr_error = await self._maybe_create_pr(task, session_dir, identifier,
                                                             base_branch=project.get("base_branch", ""),
                                                             github_token=github_token)
+            if not pr_url and pr_error:
+                # Auto-retry once after 20s for transient errors (DNS, network)
+                self.logger.info("[%s] PR creation failed, retrying in 20s: %s", identifier, pr_error)
+                await asyncio.sleep(20)
+                pr_url, pr_error = await self._maybe_create_pr(task, session_dir, identifier,
+                                                                base_branch=project.get("base_branch", ""),
+                                                                github_token=github_token)
             if pr_url:
-                self.db.update_task(task["id"], pr_url=pr_url, status="in_review")
-                pr_msg_id = uuid.uuid4().hex
-                self.db.create_message(pr_msg_id, task["id"], "system",
-                                       f"Pull request created: [{pr_url}]({pr_url})")
-
-                # Auto-merge the PR
-                merged = await self._merge_github_pr(pr_url, github_token=github_token)
-                merge_msg_id = uuid.uuid4().hex
-                if merged:
-                    self.db.update_task(task["id"], pr_merged=1, status="done")
-                    self.db.create_message(merge_msg_id, task["id"], "system",
-                                           f"PR merged and closed successfully.")
-                    self.logger.info("[%s] PR auto-merged: %s", identifier, pr_url)
-                else:
-                    self.db.create_message(merge_msg_id, task["id"], "system",
-                                           f"**PR could not be auto-merged.** Check for merge conflicts or required status checks on [{pr_url}]({pr_url}).")
-                    self.logger.warning("[%s] PR auto-merge failed: %s", identifier, pr_url)
+                await self._handle_pr_success(task, identifier, pr_url, github_token)
             elif pr_error:
-                # Surface the PR failure in chat so the user sees it
                 err_msg_id = uuid.uuid4().hex
-                self.db.create_message(err_msg_id, task["id"], "system", pr_error)
+                self.db.create_message(err_msg_id, task["id"], "system",
+                                       pr_error + "\n\n<button class=\"btn btn-sm btn-primary retry-pr-btn\" "
+                                       f"onclick=\"retryPR('{task['id']}')\">Retry PR</button>")
 
         self.logger.info("[%s] Run %s complete (status=%s, cost=$%.4f)",
                          identifier, run_id, status, cost_usd)
+
+    async def _handle_pr_success(self, task: dict, identifier: str, pr_url: str, github_token: str) -> None:
+        """Store PR URL, post system message, attempt auto-merge."""
+        self.db.update_task(task["id"], pr_url=pr_url, status="in_review")
+        pr_msg_id = uuid.uuid4().hex
+        self.db.create_message(pr_msg_id, task["id"], "system",
+                               f"Pull request created: [{pr_url}]({pr_url})")
+
+        merged = await self._merge_github_pr(pr_url, github_token=github_token)
+        merge_msg_id = uuid.uuid4().hex
+        if merged:
+            self.db.update_task(task["id"], pr_merged=1, status="done")
+            self.db.create_message(merge_msg_id, task["id"], "system",
+                                   f"PR merged and closed successfully.")
+            self.logger.info("[%s] PR auto-merged: %s", identifier, pr_url)
+        else:
+            self.db.create_message(merge_msg_id, task["id"], "system",
+                                   f"**PR could not be auto-merged.** Check for merge conflicts or required status checks on [{pr_url}]({pr_url}).")
+            self.logger.warning("[%s] PR auto-merge failed: %s", identifier, pr_url)
+
+    async def retry_pr(self, task: dict, project: dict) -> tuple[str | None, str | None]:
+        """Retry PR creation for a task. Called from the API endpoint."""
+        identifier = task["identifier"]
+        github_token = self._get_github_token(project)
+        if not github_token:
+            return None, "No GitHub token configured."
+
+        # Find the latest session dir for this task
+        runs = self.db.list_runs(task["id"])
+        session_dir = None
+        for r in runs:
+            if r.get("session_dir"):
+                session_dir = Path(r["session_dir"])
+                break
+        if not session_dir or not session_dir.exists():
+            return None, "No session found for this task."
+
+        pr_url, pr_error = await self._maybe_create_pr(
+            task, session_dir, identifier,
+            base_branch=project.get("base_branch", ""),
+            github_token=github_token,
+        )
+        if pr_url:
+            await self._handle_pr_success(task, identifier, pr_url, github_token)
+            return pr_url, None
+        return None, pr_error
 
     # ── Prompt Building ──
 

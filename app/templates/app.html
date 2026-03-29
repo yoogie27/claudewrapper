@@ -1060,6 +1060,27 @@ async function confirmDeleteTask(id) {
     hideCtx();
 }
 
+// ── Retry PR ──
+async function retryPR(taskId) {
+    const btn = event?.target;
+    if (btn) { btn.disabled = true; btn.textContent = 'Retrying...'; }
+    try {
+        const resp = await fetch(`/api/tasks/${taskId}/retry-pr`, { method: 'POST' });
+        const data = await resp.json();
+        if (data.ok) {
+            toast('PR Created', 'Pull request created successfully', 'success');
+            await loadMessages(true);
+            await loadTasks();
+        } else {
+            toast('PR Failed', data.error || 'Retry failed', 'error');
+            if (btn) { btn.disabled = false; btn.textContent = 'Retry PR'; }
+        }
+    } catch (err) {
+        toast('Error', 'Network error: ' + err.message, 'error');
+        if (btn) { btn.disabled = false; btn.textContent = 'Retry PR'; }
+    }
+}
+
 // ── Re-clone Project ──
 async function recloneProject(id, name) {
     if (!confirm(`Re-clone "${name}"? This will wipe the local repo and clone fresh from the remote URL.`)) return;
