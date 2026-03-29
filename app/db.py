@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     worktree_path TEXT,
     claude_session_id TEXT,
     cli_backend TEXT DEFAULT 'claude',
+    source_context TEXT,
     pr_url TEXT,
     pr_merged INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -141,6 +142,13 @@ class Database:
             cols = {r[1] for r in self._conn.execute("PRAGMA table_info(tasks)").fetchall()}
             if "cli_backend" not in cols:
                 self._conn.execute("ALTER TABLE tasks ADD COLUMN cli_backend TEXT DEFAULT 'claude'")
+                self._conn.commit()
+
+        # Add source_context column to tasks (if not present)
+        if "tasks" in tables:
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(tasks)").fetchall()}
+            if "source_context" not in cols:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN source_context TEXT")
                 self._conn.commit()
 
         # Add github_token column to projects (if not present)
@@ -261,12 +269,13 @@ class Database:
     def create_task(self, id: str, project_id: str, title: str, identifier: str,
                     description: str = "", mode: str = "feature",
                     priority: str = "medium", branch_name: str = "",
-                    cli_backend: str = "claude") -> dict:
+                    cli_backend: str = "claude",
+                    source_context: str = "") -> dict:
         now = utc_now()
         self._conn.execute(
-            """INSERT INTO tasks(id, project_id, title, description, mode, status, priority, identifier, branch_name, cli_backend, created_at, updated_at)
-               VALUES(?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)""",
-            (id, project_id, title, description, mode, priority, identifier, branch_name, cli_backend, now, now),
+            """INSERT INTO tasks(id, project_id, title, description, mode, status, priority, identifier, branch_name, cli_backend, source_context, created_at, updated_at)
+               VALUES(?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)""",
+            (id, project_id, title, description, mode, priority, identifier, branch_name, cli_backend, source_context or None, now, now),
         )
         self._conn.commit()
         return self.get_task(id)  # type: ignore
@@ -336,6 +345,17 @@ class Database:
         self._conn.commit()
         return {"id": id, "task_id": task_id, "role": role, "content": content,
                 "run_id": run_id, "metadata": metadata or {}, "created_at": now}
+
+    def get_message(self, id: str) -> dict | None:
+        row = self._conn.execute("SELECT * FROM messages WHERE id = ?", (id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["metadata"] = json.loads(d["metadata"]) if d["metadata"] else {}
+        except (json.JSONDecodeError, TypeError):
+            d["metadata"] = {}
+        return d
 
     def list_messages(self, task_id: str, limit: int = 0, before: str = "") -> list[dict]:
         if limit > 0:

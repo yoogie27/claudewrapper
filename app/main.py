@@ -66,6 +66,7 @@ async def index(request: Request) -> Any:
         "projects": projects,
         "mode_labels": MODE_LABELS,
         "mode_colors": MODE_COLORS,
+        "backends_json": json.dumps([{"value": b["value"], "label": b["label"]} for b in BACKEND_CHOICES]),
     })
 
 
@@ -293,6 +294,107 @@ async def create_task(project_id: str, request: Request) -> Any:
         cli_backend=cli_backend,
     )
     return task
+
+
+DERIVE_PURPOSES = {
+    "double_check": {
+        "label": "Double Check",
+        "prompt": "You are reviewing a proposal from another AI. Critically evaluate it:\n\n"
+                  "1. **Correctness** — Are there factual errors, wrong assumptions, or flawed logic?\n"
+                  "2. **Completeness** — Is anything missing? Edge cases? Error handling?\n"
+                  "3. **Risks** — What could go wrong with this approach?\n"
+                  "4. **Verdict** — Would you approve this plan as-is, or what needs to change?\n\n"
+                  "Be direct and specific. If the plan is solid, say so briefly.",
+    },
+    "improve": {
+        "label": "Improve Plan",
+        "prompt": "You are improving a proposal from another AI. Build on it:\n\n"
+                  "1. **Strengths** — What's good about this approach? Keep those parts.\n"
+                  "2. **Weaknesses** — What's suboptimal, overcomplicated, or missing?\n"
+                  "3. **Improved Plan** — Rewrite the plan with your improvements. Be concrete: name files, functions, steps.\n\n"
+                  "Output a complete, improved plan — not just a list of suggestions.",
+    },
+    "implement": {
+        "label": "Implement",
+        "prompt": "You are implementing a plan that was designed by another AI. The plan is provided below.\n\n"
+                  "Follow the plan closely. If you find issues during implementation, fix them and note what you changed and why.\n"
+                  "Do NOT re-plan or re-analyze — just build it.",
+    },
+    "custom": {
+        "label": "Custom",
+        "prompt": "",
+    },
+}
+
+
+@app.post("/api/tasks/{task_id}/derive")
+async def derive_task(task_id: str, request: Request) -> Any:
+    """Create a new task derived from a message in an existing task."""
+    source_task = db.get_task(task_id)
+    if not source_task:
+        return JSONResponse({"error": "Source task not found"}, 404)
+
+    data = await request.json()
+    message_id = data.get("message_id", "").strip()
+    purpose = data.get("purpose", "double_check").strip()
+    backend = data.get("cli_backend", "claude").strip() or "claude"
+    custom_prompt = data.get("custom_prompt", "").strip()
+
+    if purpose not in DERIVE_PURPOSES:
+        return JSONResponse({"error": f"Unknown purpose: {purpose}"}, 400)
+    valid_backends = {b["value"] for b in BACKEND_CHOICES}
+    if backend not in valid_backends:
+        return JSONResponse({"error": f"Unknown backend: {backend}"}, 400)
+
+    # Collect the last 2 messages up to and including the target message
+    all_msgs = db.list_messages(task_id)
+    if message_id:
+        # Find the target message index
+        target_idx = next((i for i, m in enumerate(all_msgs) if m["id"] == message_id), None)
+        if target_idx is None:
+            return JSONResponse({"error": "Message not found"}, 404)
+        # Take the target message + the one before it (usually user prompt + assistant response)
+        start = max(0, target_idx - 1)
+        context_msgs = all_msgs[start:target_idx + 1]
+    else:
+        # No specific message — take last 2
+        context_msgs = all_msgs[-2:] if len(all_msgs) >= 2 else all_msgs
+
+    purpose_info = DERIVE_PURPOSES[purpose]
+    purpose_prompt = custom_prompt if purpose == "custom" and custom_prompt else purpose_info["prompt"]
+
+    source_context = json.dumps({
+        "source_task_id": task_id,
+        "source_identifier": source_task["identifier"],
+        "purpose": purpose,
+        "purpose_prompt": purpose_prompt,
+        "messages": [{"role": m["role"], "content": m["content"]} for m in context_msgs],
+    })
+
+    project = db.get_project(source_task["project_id"])
+    if not project:
+        return JSONResponse({"error": "Project not found"}, 404)
+
+    purpose_label = purpose_info["label"]
+    title = f"{purpose_label}: {source_task['title']}"
+    mode = "plan" if purpose in ("double_check", "improve") else source_task["mode"]
+
+    num = db.next_task_number(source_task["project_id"])
+    identifier = f"{project['slug']}-{num:03d}"
+
+    new_task = db.create_task(
+        id=uuid.uuid4().hex,
+        project_id=source_task["project_id"],
+        title=title,
+        description=f"Derived from {source_task['identifier']} ({purpose_label})",
+        mode=mode,
+        priority=source_task.get("priority", "medium"),
+        identifier=identifier,
+        branch_name=f"ticket/{identifier}",
+        cli_backend=backend,
+        source_context=source_context,
+    )
+    return new_task
 
 
 @app.put("/api/tasks/{task_id}")

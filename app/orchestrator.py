@@ -408,6 +408,28 @@ class Orchestrator:
         if task.get("description"):
             parts.extend(["", "## Description", sanitize_for_prompt(task["description"])])
 
+        # Source context from derived task (cross-model review)
+        if task.get("source_context"):
+            try:
+                ctx = json.loads(task["source_context"])
+                purpose_prompt = ctx.get("purpose_prompt", "")
+                source_id = ctx.get("source_identifier", "")
+                source_msgs = ctx.get("messages", [])
+                if purpose_prompt or source_msgs:
+                    parts.extend(["", "---", ""])
+                    if purpose_prompt:
+                        parts.append(purpose_prompt)
+                        parts.append("")
+                    parts.append(f"## Context from {source_id}" if source_id else "## Source Context")
+                    parts.append("")
+                    for sm in source_msgs:
+                        role_label = {"user": "User", "assistant": "Assistant", "system": "System"}.get(sm["role"], sm["role"].title())
+                        parts.append(f"**[{role_label}]:**")
+                        parts.append(sm.get("content", ""))
+                        parts.append("")
+            except (json.JSONDecodeError, ValueError, KeyError):
+                pass
+
         # Conversation history (limit to last 20 messages to avoid prompt bloat)
         if messages:
             recent = messages[-20:] if len(messages) > 20 else messages

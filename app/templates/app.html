@@ -584,10 +584,18 @@ async function selectTask(id) {
     // Update header
     document.getElementById('chat-task-title').textContent = state.currentTask.title;
     const meta = document.getElementById('chat-task-meta');
+    let derivedTag = '';
+    if (state.currentTask.source_context) {
+        try {
+            const ctx = JSON.parse(state.currentTask.source_context);
+            if (ctx.source_identifier) derivedTag = `<span style="font-size:11px;color:var(--text-dim)">from ${esc(ctx.source_identifier)}</span>`;
+        } catch {}
+    }
     meta.innerHTML = `
         <span class="mode-badge" style="background:${state.modeColors[state.currentTask.mode] || '#e11d48'}">${state.modeLabels[state.currentTask.mode] || 'Feature'}</span>
         <span class="badge badge-${state.currentTask.status}">${state.currentTask.status.replace('_', ' ')}</span>
         <span>${state.currentTask.identifier}</span>
+        ${derivedTag}
     `;
 
     // Show chat UI
@@ -685,8 +693,9 @@ function renderMessage(msg) {
     const tokensHtml = tokens ? `<span class="msg-cost">${((msg.metadata.input_tokens + (msg.metadata.output_tokens||0))/1000).toFixed(1)}k tok</span>` : '';
     const time = new Date(msg.created_at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
 
+    const ctxAttr = !isUser ? `oncontextmenu="event.preventDefault();showMsgCtx(event, '${msg.id}')"` : '';
     return `
-        <div class="message message-${msg.role}">
+        <div class="message message-${msg.role}" ${ctxAttr}>
             <div class="message-bubble">
                 <div class="message-content">${content}</div>
             </div>
@@ -1081,6 +1090,70 @@ async function retryPR(taskId) {
     }
 }
 
+// ── Derive Task from Message ──
+const _derivePurposes = [
+    { value: 'double_check', label: 'Double Check' },
+    { value: 'improve', label: 'Improve Plan' },
+    { value: 'implement', label: 'Implement' },
+    { value: 'custom', label: 'Custom...' },
+];
+const _backends = {{ backends_json | safe }};
+
+function showMsgCtx(event, msgId) {
+    const menu = document.getElementById('ctx-menu');
+    menu.innerHTML = `
+        <div style="padding:6px 12px 4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px">Send to another model</div>
+        ${_derivePurposes.map(p => `
+            <div class="ctx-item" onclick="showDerivePicker('${msgId}', '${p.value}', '${p.label}')">${esc(p.label)}</div>
+        `).join('')}
+    `;
+    menu.style.display = 'block';
+    const x = event.clientX || event.touches?.[0]?.clientX || 100;
+    const y = event.clientY || event.touches?.[0]?.clientY || 100;
+    menu.style.left = Math.min(x, window.innerWidth - 200) + 'px';
+    menu.style.top = Math.min(y, window.innerHeight - 200) + 'px';
+}
+
+function showDerivePicker(msgId, purpose, purposeLabel) {
+    const menu = document.getElementById('ctx-menu');
+    const customInput = purpose === 'custom'
+        ? `<input type="text" id="derive-custom-prompt" placeholder="What should this model do?"
+             style="width:100%;padding:6px 8px;margin:4px 0 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;box-sizing:border-box">`
+        : '';
+    menu.innerHTML = `
+        <div style="padding:6px 12px 2px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px">${esc(purposeLabel)} with</div>
+        ${customInput}
+        ${_backends.map(b => `
+            <div class="ctx-item" onclick="deriveTask('${msgId}', '${purpose}', '${b.value}')">${esc(b.label)}</div>
+        `).join('')}
+        <div class="ctx-item" style="color:var(--text-dim);font-size:12px" onclick="hideCtx()">Cancel</div>
+    `;
+}
+
+async function deriveTask(msgId, purpose, backend) {
+    hideCtx();
+    if (!state.currentTask) return;
+    const customPrompt = document.getElementById('derive-custom-prompt')?.value?.trim() || '';
+    toast('Creating', 'Setting up derived task...', 'info');
+    try {
+        const resp = await fetch(`/api/tasks/${state.currentTask.id}/derive`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ message_id: msgId, purpose, cli_backend: backend, custom_prompt: customPrompt }),
+        });
+        const newTask = await resp.json();
+        if (newTask.error) {
+            toast('Error', newTask.error, 'error');
+            return;
+        }
+        await loadTasks();
+        selectTask(newTask.id);
+        toast('Created', `${newTask.identifier} ready — send a message to start`, 'success');
+    } catch (err) {
+        toast('Error', 'Failed to create derived task: ' + err.message, 'error');
+    }
+}
+
 // ── Re-clone Project ──
 async function recloneProject(id, name) {
     if (!confirm(`Re-clone "${name}"? This will wipe the local repo and clone fresh from the remote URL.`)) return;
@@ -1395,7 +1468,7 @@ document.addEventListener('touchstart', e => {
 
 // Long-press support for mobile (triggers context menu)
 document.addEventListener('DOMContentLoaded', () => {
-    document.querySelectorAll('.project-list, .task-list').forEach(container => {
+    document.querySelectorAll('.project-list, .task-list, #chat-messages').forEach(container => {
         container.addEventListener('touchstart', e => {
             const item = e.target.closest('[oncontextmenu]');
             if (!item) return;
