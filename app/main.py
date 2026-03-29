@@ -1018,6 +1018,40 @@ async def update_backend_config(backend_name: str, request: Request) -> Any:
     return {"ok": True}
 
 
+_BACKEND_UPDATE_CMDS: dict[str, list[str]] = {
+    "claude": ["npm", "install", "-g", "@anthropic-ai/claude-code@latest"],
+    "gemini": ["npm", "install", "-g", "@anthropic-ai/gemini-cli@latest"],
+    "codex": ["npm", "install", "-g", "codex@latest"],
+}
+
+@app.post("/api/backends/{backend_name}/update")
+async def update_backend_cli(backend_name: str) -> Any:
+    cmd = _BACKEND_UPDATE_CMDS.get(backend_name)
+    if not cmd:
+        return JSONResponse({"ok": False, "error": f"Unknown backend: {backend_name}"}, 400)
+
+    cflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+    def _run() -> dict:
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=120,
+                creationflags=cflags,
+            )
+            output = (result.stdout + "\n" + result.stderr).strip()
+            if result.returncode == 0:
+                return {"ok": True, "output": output}
+            return {"ok": False, "error": f"Exit code {result.returncode}", "output": output}
+        except FileNotFoundError:
+            return {"ok": False, "error": "npm not found. Please install Node.js/npm first."}
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "Update timed out after 120s"}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    return await asyncio.get_event_loop().run_in_executor(None, _run)
+
+
 @app.post("/api/detect-mode")
 async def detect_mode_api(request: Request) -> Any:
     data = await request.json()

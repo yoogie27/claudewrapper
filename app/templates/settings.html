@@ -388,10 +388,12 @@ async function loadBackends() {
                        value="${esc(b.custom_cmd)}"
                        placeholder="${esc(b.default_cmd)}"
                        style="width:100%;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:monospace">
-                <div style="display:flex;gap:8px;margin-top:8px">
+                <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
                     <button class="btn btn-sm btn-primary" onclick="saveBackendCmd('${b.value}')">Save</button>
                     <button class="btn btn-sm btn-secondary" onclick="resetBackendCmd('${b.value}')">Reset</button>
+                    <button class="btn btn-sm btn-secondary" id="btn-update-${b.value}" onclick="updateBackendCli('${b.value}')" style="margin-left:auto">Update CLI</button>
                 </div>
+                <div id="update-result-${b.value}" style="display:none;margin-top:8px;font-size:12px;padding:8px;border-radius:6px;background:var(--bg);border:1px solid var(--border);white-space:pre-wrap;font-family:monospace;max-height:120px;overflow-y:auto"></div>
             </div>
         `).join('');
     } catch {}
@@ -410,6 +412,32 @@ async function resetBackendCmd(name) {
     document.getElementById('backend-cmd-' + name).value = '';
     await saveBackendCmd(name);
     toast('Reset', name + ' command reset to default', 'info');
+}
+async function updateBackendCli(name) {
+    const btn = document.getElementById('btn-update-' + name);
+    const resultEl = document.getElementById('update-result-' + name);
+    btn.disabled = true;
+    btn.textContent = 'Updating...';
+    resultEl.style.display = 'none';
+    try {
+        const resp = await fetch('/api/backends/' + name + '/update', { method: 'POST' });
+        const data = await resp.json();
+        if (data.ok) {
+            toast('Updated', name + ' CLI updated successfully', 'success');
+            resultEl.style.display = 'block';
+            resultEl.style.borderColor = 'var(--success, #22c55e)';
+            resultEl.textContent = data.output || 'Done';
+        } else {
+            toast('Error', data.error || 'Update failed', 'error');
+            resultEl.style.display = 'block';
+            resultEl.style.borderColor = 'var(--error, #ef4444)';
+            resultEl.textContent = data.error + (data.output ? '\n' + data.output : '');
+        }
+    } catch (err) {
+        toast('Error', 'Network error: ' + err.message, 'error');
+    }
+    btn.disabled = false;
+    btn.textContent = 'Update CLI';
 }
 document.addEventListener('DOMContentLoaded', loadBackends);
 

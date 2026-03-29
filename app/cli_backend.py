@@ -74,7 +74,7 @@ class CliBackend(ABC):
         proc_env = {**os.environ, **(extra_env or {})} if extra_env else None
 
         with open(stderr_path, "w", encoding="utf-8") as err_f:
-            stdin_pipe = subprocess.PIPE if self._uses_stdin else None
+            stdin_pipe = subprocess.PIPE if self._uses_stdin else subprocess.DEVNULL
             proc = subprocess.Popen(
                 cmd, cwd=workdir, stdin=stdin_pipe,
                 stdout=subprocess.PIPE, stderr=err_f,
