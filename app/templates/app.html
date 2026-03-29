@@ -1349,7 +1349,7 @@ function showCtx(event, type, id, name, hasGit) {
         if (hasGit) items += `<div class="ctx-item" onclick="hideCtx();recloneProject('${id}','${escAttr(name)}')">&#8635; Re-clone</div>`;
         items += `<div class="ctx-item ctx-danger" onclick="hideCtx();deleteProject('${id}','${escAttr(name)}')">&#128465; Delete project</div>`;
     } else if (type === 'task') {
-        items += `<div class="ctx-item ctx-danger" onclick="hideCtx();deleteTask('${id}')">&#128465; Delete task</div>`;
+        items += `<div class="ctx-item ctx-danger" onclick="deleteTask('${id}')">&#128465; Delete task</div>`;
     }
 
     menu.innerHTML = items;
@@ -1367,7 +1367,7 @@ function hideCtx() {
 }
 
 // Close context menu on any click/tap outside
-document.addEventListener('click', hideCtx);
+document.addEventListener('click', e => { if (!e.target.closest('.ctx-menu')) hideCtx(); });
 document.addEventListener('touchstart', e => {
     if (!e.target.closest('.ctx-menu')) hideCtx();
 });
