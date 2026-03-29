@@ -368,7 +368,7 @@ async def derive_task(task_id: str, request: Request) -> Any:
         "source_identifier": source_task["identifier"],
         "purpose": purpose,
         "purpose_prompt": purpose_prompt,
-        "messages": [{"role": m["role"], "content": m["content"]} for m in context_msgs],
+        "messages": [{"role": m["role"], "content": m["content"][:8000]} for m in context_msgs],
     })
 
     project = db.get_project(source_task["project_id"])
@@ -377,7 +377,12 @@ async def derive_task(task_id: str, request: Request) -> Any:
 
     purpose_label = purpose_info["label"]
     title = f"{purpose_label}: {source_task['title']}"
-    mode = "plan" if purpose in ("double_check", "improve") else source_task["mode"]
+    if purpose in ("double_check", "improve"):
+        mode = "plan"
+    elif purpose == "implement":
+        mode = "feature"
+    else:
+        mode = source_task["mode"]
 
     num = db.next_task_number(source_task["project_id"])
     identifier = f"{project['slug']}-{num:03d}"

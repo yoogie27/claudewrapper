@@ -693,7 +693,7 @@ function renderMessage(msg) {
     const tokensHtml = tokens ? `<span class="msg-cost">${((msg.metadata.input_tokens + (msg.metadata.output_tokens||0))/1000).toFixed(1)}k tok</span>` : '';
     const time = new Date(msg.created_at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
 
-    const ctxAttr = !isUser ? `oncontextmenu="event.preventDefault();showMsgCtx(event, '${msg.id}')"` : '';
+    const ctxAttr = msg.role === 'assistant' ? `oncontextmenu="event.preventDefault();showMsgCtx(event, '${msg.id}')"` : '';
     return `
         <div class="message message-${msg.role}" ${ctxAttr}>
             <div class="message-bubble">
@@ -1117,8 +1117,8 @@ function showMsgCtx(event, msgId) {
 function showDerivePicker(msgId, purpose, purposeLabel) {
     const menu = document.getElementById('ctx-menu');
     const customInput = purpose === 'custom'
-        ? `<input type="text" id="derive-custom-prompt" placeholder="What should this model do?"
-             style="width:100%;padding:6px 8px;margin:4px 0 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;box-sizing:border-box">`
+        ? `<div style="padding:0 12px"><input type="text" id="derive-custom-prompt" placeholder="What should this model do?"
+             style="width:100%;padding:6px 8px;margin:4px 0 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;box-sizing:border-box"></div>`
         : '';
     menu.innerHTML = `
         <div style="padding:6px 12px 2px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px">${esc(purposeLabel)} with</div>
@@ -1131,9 +1131,9 @@ function showDerivePicker(msgId, purpose, purposeLabel) {
 }
 
 async function deriveTask(msgId, purpose, backend) {
-    hideCtx();
     if (!state.currentTask) return;
     const customPrompt = document.getElementById('derive-custom-prompt')?.value?.trim() || '';
+    hideCtx();
     toast('Creating', 'Setting up derived task...', 'info');
     try {
         const resp = await fetch(`/api/tasks/${state.currentTask.id}/derive`, {
@@ -1147,8 +1147,15 @@ async function deriveTask(msgId, purpose, backend) {
             return;
         }
         await loadTasks();
-        selectTask(newTask.id);
-        toast('Created', `${newTask.identifier} ready — send a message to start`, 'success');
+        await selectTask(newTask.id);
+        // Auto-send kickoff message for non-custom purposes
+        if (purpose !== 'custom') {
+            const input = document.getElementById('chat-input');
+            input.value = purpose === 'implement' ? 'Implement the plan above.' : 'Go ahead.';
+            await sendMessage();
+        } else {
+            toast('Created', `${newTask.identifier} ready — send a message to start`, 'success');
+        }
     } catch (err) {
         toast('Error', 'Failed to create derived task: ' + err.message, 'error');
     }
