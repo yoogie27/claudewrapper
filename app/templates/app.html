@@ -798,8 +798,9 @@ async function sendMessage() {
             if (data.queued) {
                 // Message queued behind an active run — stream is already connected
                 toast('Queued', 'Message queued — will be processed next', 'info');
-            } else if (!state.streamSource) {
-                // New run started and no stream active — connect
+            }
+            // Always ensure streaming is connected for active runs
+            if (!data.queued && (!state.streamSource || state.streamSource.readyState === EventSource.CLOSED)) {
                 connectStream();
             }
             // Always re-enable send so user can queue more messages
@@ -818,10 +819,15 @@ async function sendMessage() {
 }
 
 // Enter to send, Shift+Enter for newline
+// NOTE: Slash menu handler (registered later) calls e.stopImmediatePropagation()
+// to prevent this from firing when a slash item is selected.
 document.addEventListener('DOMContentLoaded', () => {
     const input = document.getElementById('chat-input');
     input.addEventListener('keydown', e => {
         if (e.key === 'Enter' && !e.shiftKey) {
+            // Don't send if slash menu is open — let the slash handler pick it up
+            const menu = document.getElementById('slash-menu');
+            if (menu && menu.style.display !== 'none') return;
             e.preventDefault();
             sendMessage();
         }
@@ -1658,10 +1664,11 @@ async function _sendSlashCommand(prompt) {
         });
         const data = await resp.json();
         if (data.ok) {
-            startStreaming(state.currentTask.id);
+            if (!state.streamSource) connectStream();
         }
     } catch {}
     _sending = false;
+    document.getElementById('btn-send').disabled = false;
     document.getElementById('btn-send').disabled = false;
 }
 
