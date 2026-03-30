@@ -643,10 +643,11 @@ async function selectTask(id) {
 }
 
 let _loadingMessages = false;
+let _pendingMessageReload = false;
 async function loadMessages(skipStreamReconnect) {
     if (!state.currentTask) return;
-    // Prevent concurrent loads from stomping each other
-    if (_loadingMessages) return;
+    // If already loading, schedule a follow-up reload so we don't miss updates
+    if (_loadingMessages) { _pendingMessageReload = true; return; }
     _loadingMessages = true;
     try {
     const taskId = state.currentTask.id;
@@ -654,8 +655,6 @@ async function loadMessages(skipStreamReconnect) {
     const msgs = await resp.json();
     // Guard: if user switched tasks while we were fetching, discard
     if (!state.currentTask || state.currentTask.id !== taskId) return;
-    // Don't replace messages with fewer results (DB might be mid-write)
-    if (msgs.length < state.messages.length && state.streaming) return;
     state.messages = msgs;
     // Mark as seen since user is viewing this task
     _markSeen(state.currentTask.id, state.messages.length);
@@ -686,7 +685,14 @@ async function loadMessages(skipStreamReconnect) {
         document.getElementById('typing-indicator').style.display = 'none';
         document.getElementById('btn-send').disabled = false;
     }
-    } finally { _loadingMessages = false; }
+    } finally {
+        _loadingMessages = false;
+        // If another reload was requested while we were busy, do it now
+        if (_pendingMessageReload) {
+            _pendingMessageReload = false;
+            loadMessages(true);
+        }
+    }
 }
 
 function renderMessages() {
@@ -991,6 +997,8 @@ function connectStream() {
                 }
             });
         });
+        // Safety net: reload again after 3s to catch PR messages added after run completion
+        setTimeout(() => { if (state.currentTask) loadMessages(true); }, 3000);
         // Refresh project list to check if all jobs are now done
         fetch('/api/projects').then(r => r.ok ? r.json() : null).then(ps => {
             if (!ps) return;

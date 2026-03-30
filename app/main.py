@@ -546,6 +546,17 @@ async def send_message(task_id: str, request: Request) -> Any:
     if not content:
         return JSONResponse({"error": "Content is required"}, 400)
 
+    # Server-side slash command resolution: if message starts with / and no
+    # prompt_template was provided, look it up from the prompt library.
+    # This handles the case where the slash menu click didn't fire properly
+    # and the literal /command text was sent via regular sendMessage().
+    if content.startswith("/") and not prompt_template and "\n" not in content:
+        cmd = content.lstrip("/").strip()
+        if cmd:
+            prompt_entry = db.get_prompt_by_command(cmd)
+            if prompt_entry:
+                prompt_template = prompt_entry["prompt"]
+
     task = db.get_task(task_id)
     if not task:
         return JSONResponse({"error": "Task not found"}, 404)
