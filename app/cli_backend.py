@@ -200,7 +200,7 @@ class ClaudeBackend(CliBackend):
             except (json.JSONDecodeError, ValueError):
                 continue
 
-        # Check last non-empty lines for "result" type (reverse scan, usually 1-2 lines)
+        # Extract cost/usage from the "result" event (last non-empty JSON line)
         for line in reversed(lines):
             stripped = line.strip()
             if not stripped:
@@ -213,24 +213,33 @@ class ClaudeBackend(CliBackend):
                     result.input_tokens = usage.get("input_tokens", 0) or 0
                     result.output_tokens = usage.get("output_tokens", 0) or 0
                     result.model = obj.get("model", "") or ""
-                    raw = obj.get("result", "")
-                    if isinstance(raw, list):
-                        summary = "".join(c.get("text", "") for c in raw if c.get("type") == "text").strip()
-                    else:
-                        summary = str(raw).strip()
-                    if summary:
-                        result.summary = summary
-                        result.session_id = session_id
-                        return result
-                break  # Only check the last non-empty JSON line
+                break
             except (json.JSONDecodeError, ValueError):
                 continue
 
-        # Fallback: use assistant text or raw output
+        # Use the FULL assistant text (all text blocks from the conversation),
+        # not the short "result" summary which often truncates the real output.
         if assistant_text:
-            result.summary = "\n".join(assistant_text).strip()[:5000]
+            result.summary = "\n".join(assistant_text).strip()[:10000]
         else:
-            result.summary = text[:5000]
+            # Fallback: try result summary, then raw output
+            for line in reversed(lines):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    obj = json.loads(stripped)
+                    if isinstance(obj, dict) and obj.get("type") == "result":
+                        raw = obj.get("result", "")
+                        if isinstance(raw, list):
+                            result.summary = "".join(c.get("text", "") for c in raw if c.get("type") == "text").strip()
+                        else:
+                            result.summary = str(raw).strip()
+                        break
+                except (json.JSONDecodeError, ValueError):
+                    continue
+            if not result.summary:
+                result.summary = text[:5000]
         result.session_id = session_id
         return result
 
