@@ -239,7 +239,7 @@ class Orchestrator:
             self.logger.warning("[%s] Unknown backend %r, falling back to claude", identifier, backend_name)
             backend = self._get_backend("claude")
 
-        resume_session_id = task.get("claude_session_id") if backend_name == "claude" else None
+        resume_session_id = task.get("claude_session_id") if backend_name in ("claude", "codex") else None
 
         # Build prompt — use pre-filled prompt_template from slash commands if available,
         # but always append git/completion instructions so commits happen.

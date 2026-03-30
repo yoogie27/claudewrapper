@@ -111,6 +111,12 @@ class CliBackend(ABC):
         result.returncode = proc.returncode
         result.stdout = stdout
         result.stderr = stderr
+        # Extract session_id from stderr if not found in stdout
+        # (Codex prints "To continue this session, run codex resume <ID>" to stderr)
+        if not result.session_id and stderr:
+            m = re.search(r'codex resume\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', stderr)
+            if m:
+                result.session_id = m.group(1)
         return result
 
 
@@ -348,6 +354,7 @@ class CodexBackend(CliBackend):
     # Codex exec: prompt piped via stdin (no arg = reads stdin as prompt).
     # --json outputs JSONL events for streaming.
     # --color never prevents ANSI escapes.
+    # Resume: codex exec resume <SESSION_ID> with follow-up prompt on stdin.
     def __init__(self, command_template: str = "codex exec --json --color never --dangerously-bypass-approvals-and-sandbox") -> None:
         super().__init__()
         self.command_template = command_template
@@ -376,9 +383,15 @@ class CodexBackend(CliBackend):
 
     def format_command(self, prompt_path: Path, workdir: Path | None,
                        prompt_text: str, resume_session_id: str | None = None) -> list[str]:
-        subs = {"prompt_path": str(prompt_path), "prompt_text": prompt_text.replace('"', '\\"'),
-                "workdir": str(workdir) if workdir else "", "session_id": resume_session_id or ""}
-        cmd = shlex.split(self.command_template.format_map(_SafeSubs(subs)))
+        if resume_session_id:
+            # Resume: codex exec resume <SESSION_ID> --json --color never ...
+            # Follow-up prompt is still piped via stdin.
+            base = self.command_template.replace("codex exec", f"codex exec resume {resume_session_id}", 1)
+            cmd = shlex.split(base)
+        else:
+            subs = {"prompt_path": str(prompt_path), "prompt_text": prompt_text.replace('"', '\\"'),
+                    "workdir": str(workdir) if workdir else "", "session_id": ""}
+            cmd = shlex.split(self.command_template.format_map(_SafeSubs(subs)))
         if self.model and "--model" not in cmd:
             cmd.extend(["--model", self.model])
         return cmd
@@ -397,6 +410,8 @@ class CodexBackend(CliBackend):
 
         result = RunResult(returncode=0, stdout=stdout, stderr="")
         agent_texts: list[str] = []
+        session_id: str | None = None
+        uuid_pat = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 
         for line in text.splitlines():
             line = line.strip()
@@ -407,6 +422,12 @@ class CodexBackend(CliBackend):
                 if not isinstance(obj, dict):
                     continue
                 evt_type = obj.get("type", "")
+
+                # Extract session_id from thread.started event
+                if evt_type == "thread.started" and not session_id:
+                    tid = obj.get("thread_id", "")
+                    if tid and re.fullmatch(uuid_pat, tid):
+                        session_id = tid
 
                 if evt_type in ("item.completed", "item.updated"):
                     item = obj.get("item", {})
@@ -427,13 +448,17 @@ class CodexBackend(CliBackend):
                         agent_texts.append(f"**Error:** {err_msg}")
 
             except (json.JSONDecodeError, ValueError):
+                # Check non-JSON lines for session ID (stderr merged or plain text)
+                m = re.search(r'codex resume\s+(' + uuid_pat + r')', line)
+                if m and not session_id:
+                    session_id = m.group(1)
                 continue
 
         if agent_texts:
-            result.summary = "\n".join(agent_texts).strip()[:5000]
+            result.summary = "\n".join(agent_texts).strip()[:10000]
         else:
-            # Fallback: use raw output (might be non-JSON plain text mode)
             result.summary = text[:5000]
+        result.session_id = session_id
         return result
 
 
