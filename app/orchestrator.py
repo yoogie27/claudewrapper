@@ -231,15 +231,6 @@ class Orchestrator:
                 self.db.update_task(task["id"], status="failed")
                 return
 
-        # Build prompt — use pre-filled prompt_template from slash commands if available,
-        # but always append git/completion instructions so commits happen.
-        if run.get("prompt") and run["prompt"].strip():
-            prompt = run["prompt"] + "\n\n" + self._completion_instructions(task, project)
-        else:
-            messages = self.db.list_messages(task["id"])
-            prompt = self._build_prompt(task, project, messages)
-            self.db.update_run(run_id, prompt=prompt)
-
         # Select CLI backend for this task
         backend_name = task.get("cli_backend") or "claude"
         try:
@@ -248,7 +239,31 @@ class Orchestrator:
             self.logger.warning("[%s] Unknown backend %r, falling back to claude", identifier, backend_name)
             backend = self._get_backend("claude")
 
-        resume_session_id = task.get("claude_session_id")
+        resume_session_id = task.get("claude_session_id") if backend_name == "claude" else None
+
+        # Build prompt — use pre-filled prompt_template from slash commands if available,
+        # but always append git/completion instructions so commits happen.
+        if run.get("prompt") and run["prompt"].strip():
+            prompt = run["prompt"] + "\n\n" + self._completion_instructions(task, project)
+        elif resume_session_id:
+            # Resuming a Claude session — Claude already has full history.
+            # Only send NEW user messages since the last run to save tokens.
+            messages = self.db.list_messages(task["id"])
+            new_msgs = []
+            for msg in reversed(messages):
+                if msg["role"] == "user":
+                    new_msgs.insert(0, msg)
+                else:
+                    break  # stop at the last non-user message (assistant/system)
+            if new_msgs:
+                prompt = "\n\n".join(m["content"] for m in new_msgs)
+                prompt += "\n\n" + self._completion_instructions(task, project)
+            else:
+                prompt = "Continue with the task.\n\n" + self._completion_instructions(task, project)
+        else:
+            messages = self.db.list_messages(task["id"])
+            prompt = self._build_prompt(task, project, messages)
+            self.db.update_run(run_id, prompt=prompt)
 
         if self.settings.test_mode:
             self.logger.info("[%s] TEST MODE — skipping %s", identifier, backend.display_name)

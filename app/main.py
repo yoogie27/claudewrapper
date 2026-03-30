@@ -99,6 +99,15 @@ def _sanitize_project(p: dict) -> dict:
     return out
 
 
+@app.get("/api/disk")
+async def disk_space() -> Any:
+    try:
+        usage = shutil.disk_usage(settings.data_dir)
+        return {"free_gb": round(usage.free / (1024**3), 1), "total_gb": round(usage.total / (1024**3), 1)}
+    except Exception:
+        return {"free_gb": None, "total_gb": None}
+
+
 @app.get("/api/projects")
 async def list_projects() -> Any:
     return [_sanitize_project(p) for p in db.list_projects()]

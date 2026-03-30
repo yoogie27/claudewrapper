@@ -28,9 +28,10 @@
             <div class="queue-list" id="queue-list"></div>
         </div>
         <div class="panel-footer">
-            <div style="display:flex;gap:12px">
+            <div style="display:flex;gap:12px;align-items:center">
                 <a href="/usage" class="btn-link">Usage</a>
                 <a href="/settings" class="btn-link">Settings</a>
+                <span id="disk-space" style="font-size:10px;color:var(--text-dim);margin-left:auto"></span>
             </div>
             <button id="theme-toggle" class="btn-icon" onclick="toggleTheme()" title="Toggle theme"></button>
         </div>
@@ -89,7 +90,7 @@
         <div class="chat-header" id="chat-header">
             <button class="btn-icon back-btn" onclick="showPanel('tasks')">&#8592;</button>
             <div class="chat-header-info">
-                <h3 id="chat-task-title">Select a task</h3>
+                <h3 id="chat-task-title" onclick="editTaskTitle()" style="cursor:pointer" title="Click to rename">Select a task</h3>
                 <span class="chat-task-meta" id="chat-task-meta"></span>
             </div>
             <div class="chat-header-actions" id="chat-header-actions"></div>
@@ -1022,6 +1023,44 @@ function connectStream() {
     };
 }
 
+// ── Editable Task Title ──
+function editTaskTitle() {
+    if (!state.currentTask) return;
+    const h3 = document.getElementById('chat-task-title');
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = state.currentTask.title;
+    input.style.cssText = 'font-size:inherit;font-weight:inherit;font-family:inherit;background:var(--bg-tertiary);border:1px solid var(--accent);border-radius:4px;padding:2px 6px;color:var(--text);width:100%;outline:none';
+    h3.replaceWith(input);
+    input.focus();
+    input.select();
+
+    async function save() {
+        const newTitle = input.value.trim();
+        const h3New = document.createElement('h3');
+        h3New.id = 'chat-task-title';
+        h3New.onclick = editTaskTitle;
+        h3New.style.cursor = 'pointer';
+        h3New.title = 'Click to rename';
+        h3New.textContent = newTitle || state.currentTask.title;
+        input.replaceWith(h3New);
+        if (newTitle && newTitle !== state.currentTask.title) {
+            await fetch(`/api/tasks/${state.currentTask.id}`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ title: newTitle }),
+            });
+            state.currentTask.title = newTitle;
+            loadTasks();
+        }
+    }
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { input.value = state.currentTask.title; input.blur(); }
+    });
+}
+
 // ── Scroll Management ──
 let userScrolledUp = false;
 document.addEventListener('DOMContentLoaded', () => {
@@ -1130,18 +1169,7 @@ async function cancelRun() {
     }
 }
 
-function deleteTask(id) {
-    // Replace context menu content with inline confirm
-    const menu = document.getElementById('ctx-menu');
-    menu.innerHTML = `
-        <div style="padding:8px 12px;font-size:13px;color:var(--text-muted)">Delete task and all runs?</div>
-        <div style="display:flex;gap:6px;padding:4px 12px 8px">
-            <button class="btn btn-sm" style="background:var(--error,#ef4444);color:#fff;border:none;flex:1" onclick="confirmDeleteTask('${id}')">Delete</button>
-            <button class="btn btn-sm btn-secondary" style="flex:1" onclick="hideCtx()">Cancel</button>
-        </div>
-    `;
-}
-async function confirmDeleteTask(id) {
+async function deleteTask(id) {
     const menu = document.getElementById('ctx-menu');
     menu.innerHTML = '<div style="padding:12px;font-size:13px;color:var(--text-muted);text-align:center">Deleting...</div>';
     // Fade out the task item
@@ -1553,7 +1581,7 @@ function showCtx(event, type, id, name, hasGit) {
         if (hasGit) items += `<div class="ctx-item" onclick="hideCtx();recloneProject('${id}','${escAttr(name)}')">&#8635; Re-clone</div>`;
         items += `<div class="ctx-item ctx-danger" onclick="hideCtx();deleteProject('${id}','${escAttr(name)}')">&#128465; Delete project</div>`;
     } else if (type === 'task') {
-        items += `<div class="ctx-item ctx-danger" onclick="deleteTask('${id}')">&#128465; Delete task</div>`;
+        items += `<div class="ctx-item ctx-danger" onclick="hideCtx();deleteTask('${id}')">&#128465; Delete task</div>`;
     }
 
     menu.innerHTML = items;
@@ -1965,10 +1993,22 @@ setInterval(async () => {
     }
 }, 5000);
 
+// ── Disk Space ──
+async function loadDiskSpace() {
+    try {
+        const resp = await fetch('/api/disk');
+        const d = await resp.json();
+        const el = document.getElementById('disk-space');
+        if (d.free_gb != null) el.textContent = `${d.free_gb} GB free`;
+    } catch {}
+}
+
 // ── Init ──
 document.addEventListener('DOMContentLoaded', async () => {
     renderProjects();
     loadQueue();
+    loadDiskSpace();
+    setInterval(loadDiskSpace, 60000);
     // Initialize active-run tracking so first poll doesn't false-fire the notification
     _hadActiveRuns = state.projects.some(p => p.has_active_run);
 
