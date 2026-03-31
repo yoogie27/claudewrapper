@@ -355,19 +355,18 @@ async def derive_task(task_id: str, request: Request) -> Any:
     if backend not in valid_backends:
         return JSONResponse({"error": f"Unknown backend: {backend}"}, 400)
 
-    # Collect the last 2 messages up to and including the target message
+    # Collect context messages — for review purposes, include the full conversation
+    # up to the target message so the reviewing model has complete context.
     all_msgs = db.list_messages(task_id)
     if message_id:
-        # Find the target message index
         target_idx = next((i for i, m in enumerate(all_msgs) if m["id"] == message_id), None)
         if target_idx is None:
             return JSONResponse({"error": "Message not found"}, 404)
-        # Take the target message + the one before it (usually user prompt + assistant response)
-        start = max(0, target_idx - 1)
-        context_msgs = all_msgs[start:target_idx + 1]
+        # Include all messages up to and including the target (last 10 to limit size)
+        context_msgs = all_msgs[max(0, target_idx - 9):target_idx + 1]
     else:
-        # No specific message — take last 2
-        context_msgs = all_msgs[-2:] if len(all_msgs) >= 2 else all_msgs
+        # No specific message — take last 10
+        context_msgs = all_msgs[-10:] if len(all_msgs) >= 10 else all_msgs
 
     purpose_info = DERIVE_PURPOSES[purpose]
     purpose_prompt = custom_prompt if purpose == "custom" and custom_prompt else purpose_info["prompt"]

@@ -885,7 +885,14 @@ function connectStream() {
             toolContainer = null;
             streamEl = document.createElement('div');
             streamEl.className = 'message message-assistant';
-            streamEl.innerHTML = `<div class="message-bubble"><div class="message-content" id="${currentStreamId}"></div></div>`;
+            streamEl.innerHTML = `<div class="message-bubble"><div class="message-content" id="${currentStreamId}"></div></div><div class="message-meta"></div>`;
+            // Context menu — uses latest assistant message ID from state after stream ends
+            streamEl.oncontextmenu = (e) => {
+                e.preventDefault();
+                // Find the last assistant message ID from loaded messages
+                const lastAssistant = [...(state.messages || [])].reverse().find(m => m.role === 'assistant');
+                if (lastAssistant?.id) showMsgCtx(e, lastAssistant.id);
+            };
             document.getElementById('chat-messages').appendChild(streamEl);
             scrollToBottom();
         }
