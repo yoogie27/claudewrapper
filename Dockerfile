@@ -7,6 +7,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     gnupg \
+    ripgrep \
+    fzf \
+    tree-sitter-cli \
+    fd-find \
+    bat \
+    jq \
+    yq \
     build-essential \
     gh \
     && rm -rf /var/lib/apt/lists/*
