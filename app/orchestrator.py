@@ -265,15 +265,20 @@ class Orchestrator:
         if run.get("prompt") and run["prompt"].strip():
             prompt = run["prompt"] + "\n\n" + self._completion_instructions(task, project)
         elif resume_session_id:
-            # Resuming a Claude session — Claude already has full history.
-            # Only send NEW user messages since the last run to save tokens.
+            # Resuming session — only send user messages NOT included in previous runs.
+            # Use the last completed run's started_at as cutoff: any user message created
+            # after that timestamp was sent during/after that run and wasn't in its prompt.
             messages = self.db.list_messages(task["id"])
-            new_msgs = []
-            for msg in reversed(messages):
-                if msg["role"] == "user":
-                    new_msgs.insert(0, msg)
-                else:
-                    break  # stop at the last non-user message (assistant/system)
+            runs = self.db.list_runs(task["id"])
+            cutoff = None
+            for r in runs:
+                if r["id"] != run_id and r.get("started_at") and r["status"] in ("done", "failed"):
+                    cutoff = r["started_at"]
+                    break  # list_runs is newest-first
+            if cutoff:
+                new_msgs = [m for m in messages if m["role"] == "user" and m["created_at"] >= cutoff]
+            else:
+                new_msgs = [m for m in messages if m["role"] == "user"][-3:]
             if new_msgs:
                 prompt = "\n\n".join(m["content"] for m in new_msgs)
                 prompt += "\n\n" + self._completion_instructions(task, project)
