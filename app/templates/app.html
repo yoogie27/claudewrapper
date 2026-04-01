@@ -726,7 +726,9 @@ function renderMessage(msg) {
 
     if (isSystem) {
         const content = renderMarkdown(msg.content);
-        const isError = msg.content.includes('failed') || msg.content.includes('Failed') || msg.content.includes('error');
+        const isError = msg.content.includes('**') && (
+            msg.content.includes('failed') || msg.content.includes('Failed') ||
+            msg.content.includes('Error') || msg.content.includes('error:'));
         return `
             <div class="message message-system ${isError ? 'message-system-error' : 'message-system-info'}">
                 <div class="message-bubble">

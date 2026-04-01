@@ -143,29 +143,40 @@ class Orchestrator:
             try:
                 await self._execute_run(run)
             except Exception as exc:
-                self.logger.error("Worker error for run %s: %s", run["id"], exc)
+                self.logger.error("Worker error for run %s: %s", run["id"], exc, exc_info=True)
                 try:
                     self.db.update_run(run["id"], status="failed", ended_at=utc_now(), exit_code=-1)
                     task = self.db.get_task(run["task_id"])
-                    if task and not self.db.has_pending_runs(run["task_id"]):
-                        self.db.update_task(run["task_id"], status="failed")
-                except Exception:
-                    pass
+                    if task:
+                        # Surface error in chat so user sees it
+                        err_msg_id = uuid.uuid4().hex
+                        self.db.create_message(err_msg_id, task["id"], "system",
+                                               f"**Run failed unexpectedly:**\n\n`{exc}`")
+                        if not self.db.has_pending_runs(run["task_id"]):
+                            self.db.update_task(run["task_id"], status="failed")
+                except Exception as db_exc:
+                    self.logger.error("Failed to record error for run %s: %s", run["id"], db_exc)
 
     async def _execute_run(self, run: dict) -> None:
         run_id = run["id"]
         task = self.db.get_task(run["task_id"])
         if not task:
-            self.db.update_run(run_id, status="failed")
+            self.logger.error("Run %s: task not found (task_id=%s)", run_id, run["task_id"])
+            self.db.update_run(run_id, status="failed", ended_at=utc_now(), exit_code=-1)
             return
 
         project = self.db.get_project(task["project_id"])
         if not project:
-            self.db.update_run(run_id, status="failed")
+            self.logger.error("Run %s: project not found (project_id=%s)", run_id, task["project_id"])
+            self.db.update_run(run_id, status="failed", ended_at=utc_now(), exit_code=-1)
+            err_msg_id = uuid.uuid4().hex
+            self.db.create_message(err_msg_id, task["id"], "system",
+                                   "**Run failed:** Project not found. Was it deleted?")
+            self.db.update_task(task["id"], status="failed")
             return
 
         identifier = task["identifier"]
-        self.logger.info("[%s] Starting run %s", identifier, run_id)
+        self.logger.info("[%s] Starting run %s (backend=%s)", identifier, run_id, task.get("cli_backend", "claude"))
 
         # Create session directory
         session_dir = self.settings.data_path() / "sessions" / identifier / run_id
@@ -284,13 +295,15 @@ class Orchestrator:
         ssh_env = self._get_git_ssh_env()
         merged_env = {**(ssh_env or {}), **getattr(backend, "_extra_env", {})}
 
+        self.logger.info("[%s] Launching %s (resume=%s, workdir=%s, prompt_len=%d)",
+                         identifier, backend.display_name, resume_session_id or "new", workdir, len(prompt))
         try:
             run_result = await asyncio.to_thread(
                 backend.run, identifier, prompt, session_dir, workdir,
                 proc_holder, resume_session_id, merged_env or None,
             )
         except Exception as exc:
-            self.logger.error("[%s] %s runner error: %s", identifier, backend.display_name, exc)
+            self.logger.error("[%s] %s runner error: %s", identifier, backend.display_name, exc, exc_info=True)
             err_msg_id = uuid.uuid4().hex
             self.db.create_message(err_msg_id, task["id"], "assistant",
                                    f"**{backend.display_name} failed to start:**\n\n`{exc}`\n\nCheck that the CLI is installed and accessible.",
@@ -302,7 +315,13 @@ class Orchestrator:
             self._proc_holders.pop(run_id, None)
 
         exit_code = run_result.returncode
-        self.logger.info("[%s] %s exited with code %d", identifier, backend.display_name, exit_code)
+        summary_preview = (run_result.summary or "")[:100].replace("\n", " ")
+        self.logger.info("[%s] %s exited code=%d, summary=%r, session=%s, tokens=%d/%d",
+                         identifier, backend.display_name, exit_code, summary_preview,
+                         run_result.session_id or "none",
+                         run_result.input_tokens, run_result.output_tokens)
+        if exit_code != 0 and run_result.stderr:
+            self.logger.warning("[%s] stderr: %s", identifier, run_result.stderr[:500])
 
         # Check if the run was cancelled while the process was running.
         # cancel_run() sets status="failed" — don't overwrite that.
