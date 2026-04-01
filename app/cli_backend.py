@@ -90,11 +90,47 @@ class CliBackend(ABC):
 
             disk_full = False
             stdout_lines: list[str] = []
+            import time as _time, threading as _thr, queue as _q
+            start_time = _time.monotonic()
+            last_output = start_time
+            timeout_secs = int(os.environ.get("RUN_TIMEOUT_SECONDS", "3600"))  # 1h max
+            idle_timeout = int(os.environ.get("RUN_IDLE_TIMEOUT_SECONDS", "300"))  # 5min no output
+            timed_out = False
+
+            # Non-blocking readline via thread (works on all platforms)
+            line_queue: _q.Queue = _q.Queue()
+            def _reader():
+                try:
+                    for ln in iter(proc.stdout.readline, ""):
+                        if not ln:
+                            break
+                        line_queue.put(ln)
+                except (ValueError, OSError):
+                    pass
+                line_queue.put(None)  # sentinel
+            reader_thread = _thr.Thread(target=_reader, daemon=True)
+            reader_thread.start()
+
             with open(stdout_path, "w", encoding="utf-8") as out_f:
                 while True:
-                    line = proc.stdout.readline()
-                    if not line:
+                    now = _time.monotonic()
+                    if now - start_time > timeout_secs:
+                        timed_out = True
+                        out_f.write(f"\n[TERMINATED: exceeded {timeout_secs}s total timeout]\n")
                         break
+                    if now - last_output > idle_timeout:
+                        timed_out = True
+                        out_f.write(f"\n[TERMINATED: no output for {idle_timeout}s]\n")
+                        break
+                    try:
+                        line = line_queue.get(timeout=5)
+                    except _q.Empty:
+                        if proc.poll() is not None:
+                            break
+                        continue
+                    if line is None:
+                        break
+                    last_output = _time.monotonic()
                     stdout_lines.append(line)
                     if not disk_full:
                         try:
@@ -102,17 +138,37 @@ class CliBackend(ABC):
                             out_f.flush()
                         except OSError:
                             disk_full = True
-            proc.wait()
+
+            if timed_out:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+            else:
+                proc.wait()
+            reader_thread.join(timeout=2)
 
         # Use collected lines instead of re-reading the entire file from disk
         stdout = "".join(stdout_lines)
         stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
         result = self.parse_result(stdout)
-        result.returncode = proc.returncode
+        result.returncode = proc.returncode if not timed_out else -9
         result.stdout = stdout
         result.stderr = stderr
+
+        # Detect token/rate limit errors from stderr (often cause silent failures)
+        if result.returncode != 0 and not result.summary.strip():
+            combined = (stdout + "\n" + stderr).lower()
+            if any(k in combined for k in ("token limit", "rate limit", "quota", "429",
+                                            "context window", "max_tokens", "billing",
+                                            "insufficient_quota", "exceeded")):
+                result.summary = "**API limit reached.** " + stderr.strip()[:500]
+            elif timed_out:
+                result.summary = "**Run timed out.** Process was terminated after producing no output."
+
         # Extract session_id from stderr if not found in stdout
-        # (Codex prints "To continue this session, run codex resume <ID>" to stderr)
         if not result.session_id and stderr:
             m = re.search(r'codex resume\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', stderr)
             if m:
@@ -165,6 +221,9 @@ class ClaudeBackend(CliBackend):
             cmd.extend(["--resume", resume_session_id])
         if self.prompt_via == "arg":
             cmd.extend([self.prompt_arg, prompt_text])
+        # Safety: prevent infinite runs with a budget cap
+        if "--max-budget-usd" not in cmd:
+            cmd.extend(["--max-budget-usd", os.environ.get("CLAUDE_MAX_BUDGET_USD", "5")])
         return cmd
 
     def prepare_workdir(self, workdir: Path) -> None:
