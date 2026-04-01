@@ -90,9 +90,17 @@ class Orchestrator:
     async def start(self) -> None:
         self.settings.ensure_dirs()
         # On startup, fail any runs stuck in 'running' from a prior crash/restart
-        orphaned = self.db.fail_orphaned_runs()
-        if orphaned:
-            self.logger.info("Startup: marked %d orphaned running runs as failed", orphaned)
+        orphaned_tasks = self.db.fail_orphaned_runs()
+        if orphaned_tasks:
+            self.logger.info("Startup: marked %d orphaned running runs as failed", len(orphaned_tasks))
+            for task_id in orphaned_tasks:
+                try:
+                    msg_id = uuid.uuid4().hex
+                    self.db.create_message(msg_id, task_id, "system",
+                                           "**Run interrupted:** Server was restarted while this task was running. "
+                                           "Send a message to retry.")
+                except Exception:
+                    pass
         asyncio.create_task(self._reaper_loop())
         asyncio.create_task(self._cleanup_loop())
         # Restart workers for projects with pending runs
@@ -340,10 +348,21 @@ class Orchestrator:
         output_tokens = run_result.output_tokens
         model = run_result.model
 
+        # If process failed with no summary, construct an error message from stderr
+        if exit_code != 0 and not summary.strip():
+            stderr_preview = (run_result.stderr or "").strip()[:1000]
+            summary = f"**{backend.display_name} exited with code {exit_code}**"
+            if stderr_preview:
+                summary += f"\n\n```\n{stderr_preview}\n```"
+            else:
+                summary += "\n\nNo output captured. Check server logs for details."
+            self.logger.warning("[%s] Empty summary with exit_code=%d, stderr: %s",
+                                identifier, exit_code, stderr_preview[:200] or "(empty)")
+
         # Store assistant message
         assistant_msg_id = uuid.uuid4().hex
         self.db.create_message(
-            assistant_msg_id, task["id"], "assistant", summary, run_id=run_id,
+            assistant_msg_id, task["id"], "assistant", summary or "(No output)", run_id=run_id,
             metadata={"cost_usd": cost_usd, "input_tokens": input_tokens, "output_tokens": output_tokens},
         )
 
@@ -581,9 +600,11 @@ class Orchestrator:
             try:
                 holder["proc"].terminate()
                 self.db.update_run(run_id, status="failed", ended_at=utc_now(), exit_code=-1)
-                # Also update the task
                 run = self.db.get_run(run_id)
                 if run:
+                    msg_id = uuid.uuid4().hex
+                    self.db.create_message(msg_id, run["task_id"], "system",
+                                           "Run cancelled by user.")
                     self.db.update_task(run["task_id"], status="failed")
                 return True
             except Exception as exc:

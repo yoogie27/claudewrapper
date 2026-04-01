@@ -744,8 +744,13 @@ async def stream_task(task_id: str) -> Any:
                     # Process exited but run wasn't cleaned up — mark failed
                     db.update_run(current_run_id, status="failed", ended_at=utc_now(), exit_code=-1)
                     task = db.get_task(task_id)
-                    if task and not db.has_pending_runs(task_id):
-                        db.update_task(task_id, status="failed")
+                    if task:
+                        import uuid as _uuid
+                        db.create_message(_uuid.uuid4().hex, task_id, "system",
+                                          "**Run failed:** Process exited without producing output. "
+                                          "Check logs for details.")
+                        if not db.has_pending_runs(task_id):
+                            db.update_task(task_id, status="failed")
                     current_run_id = None
                     pos = 0
                     stderr_pos = 0

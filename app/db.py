@@ -522,11 +522,17 @@ class Database:
         )
         self._conn.commit()
 
-    def fail_orphaned_runs(self) -> int:
-        """Mark all 'running' runs as failed (used on startup for crash recovery)."""
+    def fail_orphaned_runs(self) -> list[str]:
+        """Mark all 'running' runs as failed (used on startup for crash recovery).
+        Returns list of affected task IDs so caller can post messages."""
         now = utc_now()
         with self.tx() as conn:
-            result = conn.execute(
+            # Get affected task IDs before updating
+            affected = conn.execute(
+                "SELECT DISTINCT task_id FROM runs WHERE status='running'"
+            ).fetchall()
+            task_ids = [r[0] for r in affected]
+            conn.execute(
                 "UPDATE runs SET status='failed', ended_at=?, exit_code=-1 WHERE status='running'",
                 (now,),
             )
@@ -536,7 +542,7 @@ class Database:
                 WHERE status='in_progress'
                   AND id NOT IN (SELECT task_id FROM runs WHERE status IN ('pending', 'running'))
             """)
-            return result.rowcount
+            return task_ids
 
     def requeue_stale_runs(self, older_than_iso: str, exclude_run_ids: set[str] | None = None) -> list[str]:
         """Returns affected project IDs so caller can restart workers.
