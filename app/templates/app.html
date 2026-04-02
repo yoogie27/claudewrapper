@@ -65,6 +65,13 @@
                 <button class="btn btn-primary btn-sm" onclick="createTask()">Create</button>
             </div>
         </div>
+        <div class="scratchpad" id="scratchpad">
+            <div class="scratchpad-header">
+                <span>Scratchpad</span>
+                <span class="scratchpad-status" id="scratchpad-status">Saved</span>
+            </div>
+            <textarea id="scratchpad-input" placeholder="- [ ] Idea to implement&#10;- [ ] Another thought" rows="5"></textarea>
+        </div>
         <!-- Status filter tabs -->
         <div class="task-filters">
             <button class="filter-btn active" data-status="all" onclick="filterTasks('all', this)">All</button>
@@ -208,6 +215,7 @@ const state = {
     projects: {{ projects | tojson }},
     currentProject: null,
     tasks: [],
+    scratchpad: '',
     currentTask: null,
     messages: [],
     streaming: false,
@@ -217,6 +225,8 @@ const state = {
     modeLabels: {{ mode_labels | tojson }},
     modeColors: {{ mode_colors | tojson }},
 };
+let _scratchpadSaveTimer = null;
+let _scratchpadLoading = false;
 
 // ── Panel Navigation ──
 function showPanel(panel) {
@@ -282,6 +292,7 @@ async function selectProject(id, {autoSelectTask = true} = {}) {
     document.getElementById('tasks-project-name').textContent = state.currentProject.name;
     renderProjects();
     await loadTasks();
+    await loadScratchpad();
     startActionsPoll();
 
     if (autoSelectTask) {
@@ -306,6 +317,60 @@ async function selectProject(id, {autoSelectTask = true} = {}) {
         }
     }
     showPanel('tasks');
+}
+
+function setScratchpadStatus(label) {
+    const el = document.getElementById('scratchpad-status');
+    if (el) el.textContent = label;
+}
+
+async function loadScratchpad() {
+    const input = document.getElementById('scratchpad-input');
+    if (!state.currentProject || !input) return;
+    _scratchpadLoading = true;
+    try {
+        const resp = await fetch(`/api/projects/${state.currentProject.id}/scratchpad`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        state.scratchpad = data.scratchpad || '';
+        input.value = state.scratchpad;
+        setScratchpadStatus('Saved');
+    } finally {
+        _scratchpadLoading = false;
+    }
+}
+
+function queueScratchpadSave() {
+    if (!state.currentProject || _scratchpadLoading) return;
+    const input = document.getElementById('scratchpad-input');
+    if (!input) return;
+    const projectId = state.currentProject.id;
+    const scratchpad = input.value;
+    state.scratchpad = scratchpad;
+    setScratchpadStatus('Saving...');
+    if (_scratchpadSaveTimer) clearTimeout(_scratchpadSaveTimer);
+    _scratchpadSaveTimer = setTimeout(() => saveScratchpad(projectId, scratchpad), 300);
+}
+
+async function saveScratchpad(projectId, scratchpad) {
+    if (!projectId) return;
+    try {
+        const resp = await fetch(`/api/projects/${projectId}/scratchpad`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ scratchpad }),
+        });
+        if (!resp.ok) throw new Error('save failed');
+        if (state.currentProject?.id === projectId) {
+            setScratchpadStatus('Saved');
+        }
+        const idx = state.projects.findIndex(p => p.id === projectId);
+        if (idx >= 0) state.projects[idx].scratchpad = scratchpad;
+    } catch {
+        if (state.currentProject?.id === projectId) {
+            setScratchpadStatus('Save failed');
+        }
+    }
 }
 
 function showAddProject() {
@@ -521,6 +586,14 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     input.addEventListener('keydown', e => {
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); createTask(); }
+    });
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+    const scratchpad = document.getElementById('scratchpad-input');
+    if (!scratchpad) return;
+    scratchpad.addEventListener('input', () => {
+        queueScratchpadSave();
     });
 });
 

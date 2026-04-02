@@ -8,6 +8,7 @@ A self-hosted web app for managing coding tasks across multiple projects. Create
 
 - **Multi-project**: Add as many git repos as you want, each with its own task queue
 - **Task management**: Create tasks as Bug, Feature, or Redesign (auto-detected from title)
+- **Project scratchpad**: Per-project notes/TODO list with instant autosave in backend
 - **Chat interface**: Send messages to Claude, see streaming responses with markdown + code highlighting
 - **Git isolation**: Each task gets its own git worktree branched from latest main — zero merge conflicts
 - **Session continuity**: Follow-up messages resume the same Claude session with full context
