@@ -65,12 +65,25 @@
                 <button class="btn btn-primary btn-sm" onclick="createTask()">Create</button>
             </div>
         </div>
-        <div class="scratchpad" id="scratchpad">
-            <div class="scratchpad-header">
-                <span>Scratchpad</span>
-                <span class="scratchpad-status" id="scratchpad-status">Saved</span>
+        <!-- Ideas overlay (covers task list when open) -->
+        <div class="ideas-overlay" id="ideas-overlay" style="display:none">
+            <div class="ideas-header">
+                <span>Ideas</span>
+                <div style="display:flex;align-items:center;gap:6px">
+                    <span class="scratchpad-status" id="scratchpad-status">Saved</span>
+                    <button class="btn-icon ideas-add-btn" onclick="addIdea()" title="New idea">+</button>
+                    <button class="btn-icon" onclick="closeIdeas()" title="Close">&times;</button>
+                </div>
             </div>
-            <textarea id="scratchpad-input" placeholder="- [ ] Idea to implement&#10;- [ ] Another thought" rows="5"></textarea>
+            <div class="ideas-body">
+                <div class="ideas-list" id="ideas-list"></div>
+                <div class="ideas-editor" id="ideas-editor" style="display:none">
+                    <textarea id="ideas-editor-input" placeholder="Write your idea..."></textarea>
+                    <div class="ideas-editor-actions">
+                        <button class="btn btn-sm ideas-delete-btn" onclick="deleteIdea()" title="Delete idea">Delete</button>
+                    </div>
+                </div>
+            </div>
         </div>
         <!-- Status filter tabs -->
         <div class="task-filters">
@@ -81,6 +94,13 @@
             <button class="filter-btn" data-status="failed" onclick="filterTasks('failed', this)">Failed</button>
         </div>
         <div class="task-list" id="task-list"></div>
+        <!-- Ideas trigger bar -->
+        <div class="ideas-trigger" id="ideas-trigger" onclick="openIdeas()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.663 17h4.674M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+            <span>Ideas</span>
+            <span class="ideas-count" id="ideas-count">0</span>
+            <svg class="ideas-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>
+        </div>
         <!-- GitHub Actions Status -->
         <div class="actions-widget" id="actions-widget" style="display:none">
             <div class="actions-header">
@@ -291,6 +311,7 @@ async function selectProject(id, {autoSelectTask = true} = {}) {
     localStorage.setItem('cw-project', id);
     document.getElementById('tasks-project-name').textContent = state.currentProject.name;
     renderProjects();
+    closeIdeas();
     await loadTasks();
     await loadScratchpad();
     startActionsPoll();
@@ -319,37 +340,119 @@ async function selectProject(id, {autoSelectTask = true} = {}) {
     showPanel('tasks');
 }
 
+// ── Ideas (Scratchpad) ──
+let _ideas = [];
+let _activeIdeaIdx = -1;
+
 function setScratchpadStatus(label) {
     const el = document.getElementById('scratchpad-status');
     if (el) el.textContent = label;
 }
 
+function _parseIdeas(raw) {
+    if (!raw) return [];
+    try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed.map(item =>
+            typeof item === 'string' ? { text: item } : { text: item.text || '' }
+        );
+    } catch {}
+    // Legacy: plain text, one idea per line
+    return raw.split('\n').filter(l => l.trim()).map(l => ({ text: l.replace(/^- \[.\] /, '') }));
+}
+
+function _serializeIdeas() {
+    return JSON.stringify(_ideas.map(i => ({ text: i.text })));
+}
+
 async function loadScratchpad() {
-    const input = document.getElementById('scratchpad-input');
-    if (!state.currentProject || !input) return;
+    if (!state.currentProject) return;
     _scratchpadLoading = true;
     try {
         const resp = await fetch(`/api/projects/${state.currentProject.id}/scratchpad`);
         if (!resp.ok) return;
         const data = await resp.json();
-        state.scratchpad = data.scratchpad || '';
-        input.value = state.scratchpad;
+        _ideas = _parseIdeas(data.scratchpad);
+        _activeIdeaIdx = -1;
+        renderIdeas();
         setScratchpadStatus('Saved');
     } finally {
         _scratchpadLoading = false;
     }
 }
 
+function renderIdeas() {
+    const countEl = document.getElementById('ideas-count');
+    if (countEl) countEl.textContent = _ideas.length;
+    const list = document.getElementById('ideas-list');
+    if (!list) return;
+    if (_ideas.length === 0) {
+        list.innerHTML = '<div class="ideas-empty">No ideas yet. Click + to add one.</div>';
+        document.getElementById('ideas-editor').style.display = 'none';
+        _activeIdeaIdx = -1;
+        return;
+    }
+    list.innerHTML = _ideas.map((idea, i) => {
+        const text = idea.text.trim();
+        const preview = text ? (text.length > 50 ? text.substring(0, 50) + '…' : text) : 'Empty idea';
+        const cls = i === _activeIdeaIdx ? 'ideas-item active' : 'ideas-item';
+        const textCls = text ? 'ideas-item-text' : 'ideas-item-text empty';
+        return `<div class="${cls}" onclick="selectIdea(${i})"><span class="ideas-item-dot"></span><span class="${textCls}">${_escHtml(preview)}</span></div>`;
+    }).join('');
+    // Update editor
+    const editor = document.getElementById('ideas-editor');
+    const input = document.getElementById('ideas-editor-input');
+    if (_activeIdeaIdx >= 0 && _activeIdeaIdx < _ideas.length) {
+        editor.style.display = 'flex';
+        input.value = _ideas[_activeIdeaIdx].text;
+    } else {
+        editor.style.display = 'none';
+    }
+}
+
+function _escHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+function selectIdea(idx) {
+    _activeIdeaIdx = idx;
+    renderIdeas();
+    document.getElementById('ideas-editor-input').focus();
+}
+
+function addIdea() {
+    _ideas.unshift({ text: '' });
+    _activeIdeaIdx = 0;
+    renderIdeas();
+    document.getElementById('ideas-editor-input').focus();
+    queueScratchpadSave();
+}
+
+function deleteIdea() {
+    if (_activeIdeaIdx < 0 || _activeIdeaIdx >= _ideas.length) return;
+    _ideas.splice(_activeIdeaIdx, 1);
+    _activeIdeaIdx = _ideas.length > 0 ? Math.min(_activeIdeaIdx, _ideas.length - 1) : -1;
+    renderIdeas();
+    queueScratchpadSave();
+}
+
+function openIdeas() {
+    document.getElementById('ideas-overlay').style.display = 'flex';
+}
+
+function closeIdeas() {
+    document.getElementById('ideas-overlay').style.display = 'none';
+    _activeIdeaIdx = -1;
+}
+
 function queueScratchpadSave() {
     if (!state.currentProject || _scratchpadLoading) return;
-    const input = document.getElementById('scratchpad-input');
-    if (!input) return;
     const projectId = state.currentProject.id;
-    const scratchpad = input.value;
-    state.scratchpad = scratchpad;
     setScratchpadStatus('Saving...');
     if (_scratchpadSaveTimer) clearTimeout(_scratchpadSaveTimer);
-    _scratchpadSaveTimer = setTimeout(() => saveScratchpad(projectId, scratchpad), 300);
+    _scratchpadSaveTimer = setTimeout(() => saveScratchpad(projectId, _serializeIdeas()), 300);
 }
 
 async function saveScratchpad(projectId, scratchpad) {
@@ -361,15 +464,11 @@ async function saveScratchpad(projectId, scratchpad) {
             body: JSON.stringify({ scratchpad }),
         });
         if (!resp.ok) throw new Error('save failed');
-        if (state.currentProject?.id === projectId) {
-            setScratchpadStatus('Saved');
-        }
+        if (state.currentProject?.id === projectId) setScratchpadStatus('Saved');
         const idx = state.projects.findIndex(p => p.id === projectId);
         if (idx >= 0) state.projects[idx].scratchpad = scratchpad;
     } catch {
-        if (state.currentProject?.id === projectId) {
-            setScratchpadStatus('Save failed');
-        }
+        if (state.currentProject?.id === projectId) setScratchpadStatus('Save failed');
     }
 }
 
@@ -590,10 +689,22 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 document.addEventListener('DOMContentLoaded', () => {
-    const scratchpad = document.getElementById('scratchpad-input');
-    if (!scratchpad) return;
-    scratchpad.addEventListener('input', () => {
-        queueScratchpadSave();
+    const editorInput = document.getElementById('ideas-editor-input');
+    if (!editorInput) return;
+    editorInput.addEventListener('input', () => {
+        if (_activeIdeaIdx >= 0 && _activeIdeaIdx < _ideas.length) {
+            _ideas[_activeIdeaIdx].text = editorInput.value;
+            // Update the list item preview without losing focus
+            const items = document.querySelectorAll('.ideas-item');
+            if (items[_activeIdeaIdx]) {
+                const textEl = items[_activeIdeaIdx].querySelector('.ideas-item-text');
+                const text = editorInput.value.trim();
+                const preview = text ? (text.length > 50 ? text.substring(0, 50) + '…' : text) : 'Empty idea';
+                textEl.textContent = preview;
+                textEl.className = text ? 'ideas-item-text' : 'ideas-item-text empty';
+            }
+            queueScratchpadSave();
+        }
     });
 });
 
