@@ -441,6 +441,50 @@ html.dark .project-item.active { background: #2a1520; }
     font-family: var(--font);
 }
 
+/* ── Project Scratchpad ─────────────────────────────── */
+.scratchpad {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--card);
+}
+.scratchpad-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .4px;
+}
+.scratchpad-status {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 500;
+    color: var(--text-dim);
+    font-size: 11px;
+}
+#scratchpad-input {
+    width: 100%;
+    min-height: 90px;
+    max-height: 220px;
+    resize: vertical;
+    padding: 8px 10px;
+    border: 1px solid var(--input-border);
+    border-radius: var(--radius-sm);
+    background: var(--input-bg);
+    color: var(--text);
+    font-size: 13px;
+    font-family: var(--font);
+    line-height: 1.45;
+}
+#scratchpad-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(225,29,72,.15);
+}
+
 /* ── Task List ───────────────────────────────────────── */
 .task-list {
     flex: 1;

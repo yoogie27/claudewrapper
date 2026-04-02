@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS projects (
     local_path TEXT NOT NULL,
     base_branch TEXT DEFAULT 'main',
     default_prompt TEXT DEFAULT '',
+    scratchpad TEXT DEFAULT '',
     github_repo_url TEXT DEFAULT '',
     github_token TEXT DEFAULT '',
     created_at TEXT NOT NULL,
@@ -165,6 +166,9 @@ class Database:
             if "github_token" not in cols:
                 self._conn.execute("ALTER TABLE projects ADD COLUMN github_token TEXT DEFAULT ''")
                 self._conn.commit()
+            if "scratchpad" not in cols:
+                self._conn.execute("ALTER TABLE projects ADD COLUMN scratchpad TEXT DEFAULT ''")
+                self._conn.commit()
 
     def wal_checkpoint(self) -> None:
         try:
@@ -204,12 +208,13 @@ class Database:
 
     def create_project(self, id: str, name: str, slug: str, local_path: str,
                        base_branch: str = "main", default_prompt: str = "",
-                       github_repo_url: str = "", github_token: str = "") -> dict:
+                       github_repo_url: str = "", github_token: str = "",
+                       scratchpad: str = "") -> dict:
         now = utc_now()
         self._conn.execute(
-            """INSERT INTO projects(id, name, slug, local_path, base_branch, default_prompt, github_repo_url, github_token, created_at, updated_at)
-               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (id, name, slug, local_path, base_branch, default_prompt, github_repo_url, github_token, now, now),
+            """INSERT INTO projects(id, name, slug, local_path, base_branch, default_prompt, scratchpad, github_repo_url, github_token, created_at, updated_at)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (id, name, slug, local_path, base_branch, default_prompt, scratchpad, github_repo_url, github_token, now, now),
         )
         self._conn.commit()
         return self.get_project(id)  # type: ignore

@@ -166,6 +166,7 @@ async def create_project(request: Request) -> Any:
             local_path=str(repo_path),
             base_branch=data.get("base_branch", "main") or "main",
             default_prompt=data.get("default_prompt", ""),
+            scratchpad=data.get("scratchpad", ""),
             github_repo_url=github_url,
             github_token=data.get("github_token", "").strip(),
         )
@@ -179,6 +180,7 @@ async def create_project(request: Request) -> Any:
             local_path=str(repo_path),
             base_branch=data.get("base_branch", "main") or "main",
             default_prompt=data.get("default_prompt", ""),
+            scratchpad=data.get("scratchpad", ""),
             github_repo_url=github_url,
             github_token=data.get("github_token", "").strip(),
         )
@@ -232,13 +234,34 @@ async def update_project(project_id: str, request: Request) -> Any:
     if not project:
         return JSONResponse({"error": "Not found"}, 404)
 
-    allowed = {"name", "base_branch", "default_prompt", "github_repo_url", "github_token"}
+    allowed = {"name", "base_branch", "default_prompt", "github_repo_url", "github_token", "scratchpad"}
     updates = {k: v for k, v in data.items() if k in allowed and v is not None}
     if "name" in updates and not updates["name"].strip():
         return JSONResponse({"error": "Name cannot be empty"}, 400)
     if updates:
         db.update_project(project_id, **updates)
     return _sanitize_project(db.get_project(project_id))
+
+
+@app.get("/api/projects/{project_id}/scratchpad")
+async def get_project_scratchpad(project_id: str) -> Any:
+    project = db.get_project(project_id)
+    if not project:
+        return JSONResponse({"error": "Not found"}, 404)
+    return {"project_id": project_id, "scratchpad": project.get("scratchpad", "") or ""}
+
+
+@app.put("/api/projects/{project_id}/scratchpad")
+async def update_project_scratchpad(project_id: str, request: Request) -> Any:
+    project = db.get_project(project_id)
+    if not project:
+        return JSONResponse({"error": "Not found"}, 404)
+    data = await request.json()
+    scratchpad = data.get("scratchpad", "")
+    if not isinstance(scratchpad, str):
+        return JSONResponse({"error": "scratchpad must be a string"}, 400)
+    db.update_project(project_id, scratchpad=scratchpad)
+    return {"ok": True, "project_id": project_id, "scratchpad": scratchpad}
 
 
 @app.delete("/api/projects/{project_id}")
